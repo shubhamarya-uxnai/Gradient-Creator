@@ -47,7 +47,7 @@
 /* Bump on every change. The page compares this with the copy on disk, so a
    browser holding a stale cached version says so instead of silently running
    old code, which is what happened for most of 22 Sep. */
-const APP_VERSION = '2026.09.22-17';
+const APP_VERSION = '2026.09.22-18';
 /* ============================================================
    Gradient GIF Studio
    Self contained. No network, no libraries, no upload.
@@ -2049,14 +2049,28 @@ group($('#right'), 'Export', body => {
   const ls = document.createElement('div'); ls.className = 'mini'; ls.id = 'localStatus';
   local.appendChild(lb); local.appendChild(ls);
   body.appendChild(local);
+  /* online copy only: connect to the helper, or download it (the helper fetches gifski itself) */
+  const REPO = 'https://github.com/shubhamarya-uxnai/Gradient-Creator';
+  const RUN = 'cd ~/Downloads/Gradient-Creator-main && python3 start.py --online';
   const hc = document.createElement('div'); hc.className = 'stat hidden'; hc.id = 'helperBox';
   const hb = document.createElement('button'); hb.className = 'btn'; hb.id = 'helperBtn'; hb.textContent = 'Use gifski on this Mac';
   hb.onclick = () => connectHelper();
   const hn = document.createElement('div'); hn.className = 'mini';
-  hn.innerHTML = 'Lighter, cleaner GIFs from gifski on your own Mac, nothing uploaded. Needs the free helper running there: <b>python3 start.py</b> ' +
-    '(<a href="https://github.com/shubhamarya-uxnai/Gradient-Creator#use-gifski-from-the-online-studio" target="_blank" rel="noopener">how</a>). ' +
+  hn.textContent = 'Lighter, cleaner GIFs from gifski on your own Mac, nothing uploaded. Needs the free helper running there. ' +
     'The first time, your browser asks to reach apps on this device: allow it.';
-  hc.appendChild(hb); hc.appendChild(hn);
+  const hd = document.createElement('a'); hd.className = 'btn sm'; hd.id = 'helperDownload';
+  hd.href = REPO + '/archive/refs/heads/main.zip'; hd.textContent = 'Download for Mac (.zip)';
+  const hs = document.createElement('div'); hs.className = 'mini';
+  hs.innerHTML = 'No helper yet? Download, unzip, then paste this into Terminal. The first run sets up gifski, ' +
+    'and you also get the whole studio offline on your Mac. <a href="' + REPO + '#use-gifski-from-the-online-studio" target="_blank" rel="noopener">Details</a>';
+  const hr = document.createElement('div'); hr.className = 'cmd';
+  const hcode = document.createElement('code'); hcode.textContent = RUN;
+  const hcopy = document.createElement('button'); hcopy.className = 'btn sm'; hcopy.textContent = 'Copy';
+  hcopy.onclick = () => navigator.clipboard.writeText(RUN).then(
+    () => toast('Copied. Paste it into Terminal.'),
+    () => toast('Could not copy: select the command and copy it.'));
+  hr.appendChild(hcode); hr.appendChild(hcopy);
+  [hb, hn, hs, hd, hr].forEach(el => hc.appendChild(el));
   body.appendChild(hc);
   REFRESH.push(() => hc.classList.toggle('hidden', ON_HELPER || !!localEngineName()));
   addRange(body, X, 'localQuality', 'Max quality', 25, 100, 1, v => String(v), { on: () => save(), showIf: () => !!localEngineName() });

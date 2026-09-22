@@ -30,9 +30,16 @@ Needs macOS with Python 3. Pillow is optional.
 
 The online studio can use gifski on your own Mac, so the link gives you the lightest GIFs too.
 
-1. On your Mac, run `python3 start.py --online` and keep the window open. It starts the helper and opens the online studio.
-2. In the Export panel, click **Use gifski on this Mac**.
-3. The first time, your browser asks whether the site may reach apps on this device. Allow it.
+1. **Get the helper.** In the online studio's Export panel, click **Download for Mac (.zip)**, or download this repository as a zip, and unzip it.
+2. **Start it.** In Terminal, run the line below and keep the window open. The first run sets up gifski and opens the online studio. If your Mac has never used Python, macOS offers to install it first.
+
+   ```bash
+   cd ~/Downloads/Gradient-Creator-main && python3 start.py --online
+   ```
+
+3. **Connect.** In the Export panel, click **Use gifski on this Mac**. The first time, your browser asks whether the site may reach apps on this device. Allow it.
+
+The same download also runs the whole studio offline on your Mac: `python3 start.py` opens it at http://localhost:5600.
 
 From then on, the online studio shows **Export best GIF (gifski)** whenever the helper is running. Your frames go from the browser straight to your Mac, and nothing is uploaded. The helper only answers this page and the local copy, and refuses every other website. It looks for the helper on port 5600.
 
