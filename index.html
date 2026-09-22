@@ -47,7 +47,7 @@
 /* Bump on every change. The page compares this with the copy on disk, so a
    browser holding a stale cached version says so instead of silently running
    old code, which is what happened for most of 22 Sep. */
-const APP_VERSION = '2026.09.22-16';
+const APP_VERSION = '2026.09.22-17';
 /* ============================================================
    Gradient GIF Studio
    Self contained. No network, no libraries, no upload.
@@ -1481,14 +1481,23 @@ async function detectLocal(){
     return j && j.ok ? j.engines : null;
   } catch(e){ return null; }
 }
+/* Chromium asks before a website may reach apps on this device (Local Network Access) */
+async function deviceAccess(){
+  for (const name of ['loopback-network', 'local-network-access', 'local-network']){
+    try { return (await navigator.permissions.query({ name })).state; } catch(e){}
+  }
+  return null;
+}
 async function connectHelper(){
   HELPER_ASKED = true;
   try { localStorage.setItem('ggs.helper', '1'); } catch(e){}
   LOCAL = await detectLocal();
   refresh();
   const e = localEngineName();
-  toast(e ? 'Connected: Export best GIF now uses ' + e + ' on this Mac.'
-          : 'No helper found on this Mac. Run python3 start.py there, keep it open, then try again.');
+  if (e) return toast('Connected: Export best GIF now uses ' + e + ' on this Mac.');
+  toast(await deviceAccess() === 'denied'
+    ? 'Your browser blocked this site from reaching apps on this Mac. Allow it in this site\'s settings in your browser, then try again.'
+    : 'No helper found on this Mac. Run python3 start.py there, keep it open, then try again.');
 }
 function localEngineName(){
   if (!LOCAL) return null;
