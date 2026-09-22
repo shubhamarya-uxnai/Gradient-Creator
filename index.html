@@ -47,7 +47,7 @@
 /* Bump on every change. The page compares this with the copy on disk, so a
    browser holding a stale cached version says so instead of silently running
    old code, which is what happened for most of 22 Sep. */
-const APP_VERSION = '2026.09.22-14';
+const APP_VERSION = '2026.09.22-15';
 /* ============================================================
    Gradient GIF Studio
    Self contained. No network, no libraries, no upload.
@@ -1460,7 +1460,8 @@ async function renderFramesZip(onProg, token){
 /* ---------- one click: encode on this Mac with the best installed encoder ---------- */
 let LOCAL = null;   /* engines reported by the studio's local server, null when not served by it */
 async function detectLocal(){
-  if (location.protocol === 'file:') return null;
+  /* only the local start.py server has encoders; the hosted copy (GitHub Pages) skips the check */
+  if (!/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return null;
   try {
     const r = await fetch('/api/health', { cache: 'no-store' });
     if (!r.ok) return null;

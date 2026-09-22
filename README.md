@@ -1,8 +1,14 @@
 # Gradient Creator
 
-Animated gradient loops with glass, dot and halftone effects, exported as light, high quality GIFs. Everything runs on your Mac and nothing is uploaded.
+Animated gradient loops with glass, dot and halftone effects, exported as light, high quality GIFs. Everything runs in your browser and nothing is uploaded.
 
-## Run it
+## Use it online
+
+**https://shubhamarya-uxnai.github.io/Gradient-Creator/**
+
+Works in any modern browser with nothing to install. Every export is there except *Export best GIF*, which needs the local version below.
+
+## Run it on your Mac
 
 ```bash
 python3 start.py
