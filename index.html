@@ -1,0 +1,2463 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gradient GIF Studio</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand"><span class="dot"></span>Gradient GIF Studio <small>local, offline, no upload</small> <small id="ver"></small></div>
+    <div class="spacer"></div>
+    <div class="hkeys"><kbd>R</kbd> randomise &nbsp; <kbd>Space</kbd> play &nbsp; <kbd>E</kbd> export</div>
+  </header>
+
+  <main>
+    <aside class="left" id="left"></aside>
+
+    <section class="stage">
+      <div class="canvaswrap"><canvas id="preview"></canvas></div>
+      <div class="transport">
+        <button class="tbtn" id="playBtn" title="Play / pause">
+          <svg id="playIcon" viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+        </button>
+        <input type="range" class="scrub" id="scrub" min="0" max="100" value="0" step="1">
+        <div class="tmeta" id="tmeta">frame 1 / 45</div>
+        <button class="btn sm" id="gifViewBtn" title="Show the exact colours and dither the GIF will contain">GIF view</button>
+      </div>
+      <div class="overlay" id="overlay">
+        <div class="ovbox">
+          <div class="big" id="ovTitle">Encoding GIF</div>
+          <div class="bar"><i id="ovBar"></i></div>
+          <div class="lbl" id="ovLbl">Building palette</div>
+          <button class="btn sm ghost" id="ovCancel">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="right" id="right"></aside>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* Bump on every change. The page compares this with the copy on disk, so a
+   browser holding a stale cached version says so instead of silently running
+   old code, which is what happened for most of 22 Sep. */
+const APP_VERSION = '2026.09.22-14';
+/* ============================================================
+   Gradient GIF Studio
+   Self contained. No network, no libraries, no upload.
+   Sections: 1 utils  2 params  3 render engine  4 gif encoder
+             5 quantiser  6 export + size fitting  7 ui
+   ============================================================ */
+
+/* ---------- 1. utils ---------- */
+const TAU = Math.PI * 2;
+const $ = (s, r) => (r || document).querySelector(s);
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+const yieldUI = () => new Promise(r => setTimeout(r, 0));
+/* A yield per frame cost more than the encoding did, because setTimeout is clamped
+   and throttled harder when the window is not in front. Yield on a time budget
+   instead: the progress bar still moves, the work runs at full speed. */
+let _yt = 0;
+async function breathe(){
+  const t = performance.now();
+  if (t - _yt > 90){ _yt = t; await yieldUI(); }
+}
+
+function mulberry32(a){
+  return function(){
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function hex2rgb(h){
+  h = h.replace('#','');
+  if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+  const n = parseInt(h, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function rgba(hex, a){
+  const c = hex2rgb(hex);
+  return 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a + ')';
+}
+function fmtBytes(b){
+  if (b == null) return '--';
+  if (b < 1024) return b + ' B';
+  if (b < 1024 * 1024) return (b / 1024).toFixed(b < 10240 ? 1 : 0) + ' KB';
+  return (b / 1048576).toFixed(2) + ' MB';
+}
+function download(blob, name){
+  const u = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = u; a.download = name; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(u); a.remove(); }, 1500);
+}
+let toastTimer = 0;
+function toast(msg){
+  const el = $('#toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+}
+const _bufs = {};
+function buf(key, w, h, readback){
+  let b = _bufs[key];
+  if (!b) {
+    const c = document.createElement('canvas');
+    b = _bufs[key] = { c, x: c.getContext('2d', { willReadFrequently: !!readback }) };
+  }
+  if (b.c.width !== w || b.c.height !== h) { b.c.width = w; b.c.height = h; }
+  return b;
+}
+
+/* ---------- 2. params ---------- */
+const PALETTES = {
+  'Dusk':      ['#0a0a1f','#3b2fd6','#ff4d9d','#ffb26b','#22d3ee'],
+  'Mint':      ['#04131a','#00f5d4','#00bbf9','#9b5de5','#f1f7ff'],
+  'Ember':     ['#170707','#d62828','#ef476f','#ffd166','#ff8c42'],
+  'Nordic':    ['#0b1622','#1d3557','#457b9d','#a8dadc','#f1faee'],
+  'Riso':      ['#fff6e5','#ff5c00','#0038ff','#00d4a0','#1a1a1a'],
+  'Orchid':    ['#12071f','#5f0f40','#9a031e','#fb8b24','#e36414'],
+  'Vapor':     ['#1b0b2e','#7b2ff7','#f107a3','#00e5ff','#fefefe'],
+  'Moss':      ['#0c140d','#2d6a4f','#74c69d','#d8f3dc','#f4a261'],
+  'Graphite':  ['#0d0d0f','#2b2d36','#585c6e','#a8adbf','#e8eaf2'],
+  'Solar':     ['#1a1200','#ff9e00','#ffd60a','#ff477e','#03071e'],
+  'Deep sea':  ['#000814','#001d3d','#003566','#0077b6','#48cae4'],
+  'Candy':     ['#fff0f3','#ffb3c6','#ff8fab','#8093f1','#72ddf7'],
+  'Sakura':    ['#fff2f7','#ffc2dd','#ff5fa2','#e6006e','#8c0045'],
+  'Highlight': ['#f2f200','#fffb8f','#0a0a0a','#5c5c00','#ffffff'],
+  'Cobalt':    ['#05061f','#1436ff','#4d8cff','#a8c8ff','#eef4ff'],
+  'Mono':      ['#101010','#2e2e2e','#000000','#1c1c1c','#3a3a3a']
+};
+
+const P = {
+  style: 'mesh',
+  seed: 8412,
+  colors: PALETTES['Dusk'].slice(),
+  colorCount: 5,
+  bg: '#070810',
+  mix: 'screen',
+  blobs: 5,
+  blobSize: 0.62,
+  spread: 0.70,
+  warp: 0.35,
+  bands: 6,
+  angle: 35,
+  softness: 0.55,
+  blur: 22,
+  saturation: 1.15,
+  contrast: 1.04,
+  brightness: 1.0,
+  posterize: 0,
+  grain: 0.08,
+  grainSize: 2.0,
+  grainAnim: false,
+  vignette: 0.22,
+  speed: 1,
+
+  /* effect layer, applied to the finished gradient */
+  fx: 'none',
+  htCell: 16, htAspect: 1, htAngle: 0, htMax: 1.05, htMin: 0, htGamma: 1,
+  htShape: 'circle', htInvert: false, htMode: 'ink',
+  htInk: '#0a0a0a', htPaper: '#f2f200',
+  dgCell: 62, dgOverlap: 0.04, dgDepth: 0.45, dgLight: 140, dgRim: 0.25,
+  flCount: 20, flAngle: 0, flRefract: 1.8, flEdge: 0.35, flCover: 1, flDrift: false,
+  pnCount: 6, pnShape: 'rrect', pnScale: 0.42, pnOffX: 0.10, pnOffY: 0.07,
+  pnRadius: 0.16, pnAlpha: 0.5, pnGlow: 0.55, pnRot: 12, pnSpin: false
+};
+
+/* pristine copy of every look param, so a preset resolves the same way every
+   time instead of inheriting whatever happened to be on screen before it */
+const DEFAULTS = JSON.parse(JSON.stringify(P));
+
+const X = {
+  /* 800 square at 20fps for 3s is 60 full frames and lands around 10 MB, which is
+     unusable. These defaults are measured to land near 2 MB on typical content. */
+  w: 600, h: 600,
+  fps: 12.5, dur: 2.4,
+  maxColors: 48,
+  dither: 'blue',
+  ditherAmt: 0.6,
+  deltaOn: true,
+  /* Tolerance above about 8 lets pixels hold stale colours until they drift far
+     enough, and neighbours refresh at different moments, so the loop smears into
+     blotches and contour trails that grow toward the end. 4 stays invisible. */
+  deltaThresh: 4,
+  loop: 0,
+  targetKB: 2560,
+  localQuality: 90,  /* the most it will use; it steps down to fit the target */
+  zoomX: 1, zoomY: 1, linkZoom: true, panX: 0.5, panY: 0.5,
+  v: 3
+};
+
+const STYLES = [
+  ['mesh','Mesh blobs'], ['aurora','Aurora ribbons'], ['waves','Silk waves'],
+  ['conic','Conic sweep'], ['linear','Linear sweep'], ['rings','Ripple rings']
+];
+
+const PRESETS = {
+  'Soft mesh':   { seed:8412, style:'mesh',  mix:'screen', blobs:5, blobSize:.62, spread:.7,  warp:.35, softness:.55, blur:22, posterize:0,  grain:.10, vignette:.22, saturation:1.15, contrast:1.04, pal:'Dusk' },
+  'Aurora':      { seed:2291, style:'aurora',mix:'screen', blobs:6, blobSize:.8,  spread:.85, warp:.55, softness:.6,  blur:30, posterize:0,  grain:.14, vignette:.35, saturation:1.3,  contrast:1.1,  pal:'Mint' },
+  'Silk':        { seed:5510, style:'waves', mix:'screen', blobs:5, blobSize:.6, spread:.9, warp:.75, bands:6, softness:.4, blur:14, posterize:0, grain:.07, vignette:.14, saturation:1.25, contrast:1.12, brightness:1.12, pal:'Nordic' },
+  'Riso print':  { seed:7734, style:'mesh',  mix:'multiply', blobs:4, blobSize:.8, spread:.55, warp:.3, softness:.5, blur:12, posterize:5, grain:.26, grainSize:2.6, vignette:.1, saturation:1.2, contrast:1.12, pal:'Riso' },
+  'Chrome':      { seed:3106, style:'conic', mix:'source-over', blobs:5, blobSize:.6, spread:.45, warp:.5, softness:.62, blur:26, posterize:0, grain:.07, vignette:.22, saturation:1.05, contrast:1.22, brightness:1.15, pal:'Graphite' },
+  'Ripple':      { seed:9025, style:'rings', mix:'source-over', blobs:5, blobSize:.6, spread:.35, warp:.3, bands:4, softness:.68, blur:34, posterize:0, grain:.1, vignette:.28, saturation:1.2, contrast:1.05, pal:'Deep sea' },
+  'Heat':        { seed:4417, style:'mesh',  mix:'lighter', blobs:5, blobSize:.62, spread:.8, warp:.45, softness:.58, blur:26, posterize:0, grain:.12, vignette:.35, saturation:1.3, contrast:1.05, brightness:1.1, pal:'Ember' },
+  'Fog':         { seed:6188, style:'mesh',  mix:'screen', blobs:6, blobSize:.8, spread:.55, warp:.25, softness:.72, blur:40, posterize:0, grain:.18, grainSize:2.2, vignette:.38, saturation:.5, contrast:1.18, brightness:1.05, pal:'Graphite' },
+
+  'Halftone':    { seed:4021, style:'mesh', mix:'multiply', blobs:3, blobSize:.62, spread:.45, warp:.35, softness:.52, blur:16, grain:0, vignette:0, contrast:1.12, saturation:1, brightness:1, pal:'Mono', bg:'#ffffff',
+                   fx:'halftone', htCell:26, htAspect:.5, htMax:1.02, htMin:.1, htGamma:1.5, htAngle:0, htShape:'circle', htMode:'ink', htInk:'#0a0a0a', htPaper:'#f2f200', htInvert:false },
+  'Sakura discs':{ seed:1503, style:'rings', blobSize:.55, spread:.12, bands:5, softness:.62, blur:26, grain:0, vignette:.1, saturation:1.1, contrast:1.05, pal:'Sakura',
+                   fx:'dotglass', dgCell:64, dgOverlap:.03, dgDepth:.5, dgLight:145, dgRim:.3 },
+  'Fluted':      { seed:8890, style:'mesh', mix:'screen', blobs:3, blobSize:.55, spread:.55, warp:.3, softness:.5, blur:16, grain:.04, vignette:.18, saturation:1.2, contrast:1.15, pal:'Cobalt',
+                   fx:'fluted', flCount:15, flRefract:2.7, flAngle:0, flEdge:.5, flCover:.55, flDrift:false },
+  'Panes':       { seed:2647, style:'mesh', mix:'screen', blobs:3, blobSize:.8, spread:.4, warp:.25, softness:.68, blur:30, grain:.04, vignette:.35, saturation:1.2, contrast:1.05, pal:'Cobalt',
+                   fx:'panes', pnCount:6, pnShape:'rrect', pnScale:.4, pnOffX:.11, pnOffY:.08, pnRadius:.17, pnAlpha:.55, pnGlow:.6, pnRot:14, pnSpin:false }
+};
+
+const SIZE_PRESETS = [
+  ['Square 600',      600, 600],
+  ['Square 800',      800, 800],
+  ['Square 480',      480, 480],
+  ['Wide 1200x675',  1200, 675],
+  ['LinkedIn 1200x627', 1200, 627],
+  ['Story 720x1280',  720, 1280],
+  ['Banner 1500x500',1500, 500],
+  ['Avatar 400',      400, 400],
+  ['Emoji 128',       128, 128]
+];
+
+/* ---------- 3. render engine ---------- */
+let shapeCache = { key: '', arr: [] };
+function shapes(p){
+  const key = p.seed + '|' + p.blobs;
+  if (shapeCache.key === key) return shapeCache.arr;
+  const rnd = mulberry32(p.seed);
+  const arr = [];
+  for (let i = 0; i < p.blobs; i++){
+    arr.push({
+      x: 0.15 + rnd() * 0.7, y: 0.15 + rnd() * 0.7,
+      rx: 0.10 + rnd() * 0.30, ry: 0.10 + rnd() * 0.30,
+      kx: 1 + Math.floor(rnd() * 3), ky: 1 + Math.floor(rnd() * 3),
+      kr: 1 + Math.floor(rnd() * 2),
+      px: rnd(), py: rnd(), pr: rnd(),
+      size: 0.40 + rnd() * 0.55
+    });
+  }
+  shapeCache = { key, arr };
+  return arr;
+}
+
+/* stacked additive blends blow out to white, so scale peak alpha by mode and count */
+function blendPeak(mix, n){
+  if (mix === 'lighter') return clamp(2.6 / Math.max(1, n), 0.22, 0.85);
+  if (mix === 'screen') return clamp(3.8 / Math.max(1, n), 0.40, 1);
+  return 1;
+}
+
+function drawMesh(c, W, H, t, p, cols){
+  c.fillStyle = p.bg; c.fillRect(0, 0, W, H);
+  c.globalCompositeOperation = p.mix;
+  const sh = shapes(p), D = Math.max(W, H);
+  const peak = blendPeak(p.mix, sh.length);
+  for (let i = 0; i < sh.length; i++){
+    const s = sh[i];
+    const x = (s.x + s.rx * p.spread * Math.sin(TAU * (s.kx * t + s.px))) * W;
+    const y = (s.y + s.ry * p.spread * Math.cos(TAU * (s.ky * t + s.py))) * H;
+    const r = D * p.blobSize * s.size * (1 + p.warp * 0.45 * Math.sin(TAU * (s.kr * t + s.pr)));
+    if (r <= 0.5) continue;
+    const col = cols[i % cols.length];
+    const g = c.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, rgba(col, peak));
+    g.addColorStop(0.45, rgba(col, peak * 0.45));
+    g.addColorStop(1, rgba(col, 0));
+    c.fillStyle = g; c.fillRect(0, 0, W, H);
+  }
+  c.globalCompositeOperation = 'source-over';
+}
+
+function drawAurora(c, W, H, t, p, cols){
+  c.fillStyle = p.bg; c.fillRect(0, 0, W, H);
+  c.globalCompositeOperation = p.mix;
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  const sh = shapes(p);
+  for (let i = 0; i < sh.length; i++){
+    const s = sh[i], col = cols[i % cols.length];
+    const g = c.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, rgba(col, 0));
+    g.addColorStop(0.3, rgba(col, 0.95));
+    g.addColorStop(0.66, rgba(col, 0.6));
+    g.addColorStop(1, rgba(col, 0));
+    c.strokeStyle = g;
+    c.lineWidth = W * 0.13 * p.blobSize * (0.45 + s.size);
+    c.beginPath();
+    const steps = 26;
+    for (let j = 0; j <= steps; j++){
+      const v = j / steps, y = v * H;
+      const x = (s.x + p.spread * 0.4 * Math.sin(TAU * (s.kx * t + s.px + v * (0.5 + p.warp * 1.8)))) * W;
+      if (j) c.lineTo(x, y); else c.moveTo(x, y);
+    }
+    c.stroke();
+  }
+  c.globalCompositeOperation = 'source-over';
+}
+
+function drawWaves(c, W, H, t, p, cols){
+  c.fillStyle = p.bg; c.fillRect(0, 0, W, H);
+  c.globalCompositeOperation = p.mix;
+  const n = Math.max(2, p.bands);
+  for (let i = n - 1; i >= 0; i--){
+    const u = i / (n - 1 || 1);
+    const col = cols[i % cols.length];
+    const base = (0.12 + u * 0.82) * H;
+    const amp = H * 0.13 * p.warp * 2 * (0.35 + u) * p.spread;
+    const g = c.createLinearGradient(0, base - amp * 2.5, 0, H);
+    g.addColorStop(0, rgba(col, 1));
+    g.addColorStop(1, rgba(col, 0.2));
+    c.fillStyle = g;
+    c.beginPath(); c.moveTo(0, H);
+    const steps = 44;
+    for (let j = 0; j <= steps; j++){
+      const x = j / steps * W;
+      const y = base + amp * Math.sin(TAU * ((i % 3 + 1) * t + x / W * (0.8 + u * 2.2) + u));
+      c.lineTo(x, y);
+    }
+    c.lineTo(W, H); c.closePath(); c.fill();
+  }
+  c.globalCompositeOperation = 'source-over';
+}
+
+function sortedStops(g, pairs){
+  pairs.sort((a, b) => a[0] - b[0]);
+  let last = -1;
+  for (let i = 0; i < pairs.length; i++){
+    let pos = clamp(pairs[i][0], 0, 1);
+    if (pos <= last) pos = Math.min(1, last + 0.0005);
+    last = pos;
+    g.addColorStop(pos, pairs[i][1]);
+  }
+}
+
+function drawLinear(c, W, H, t, p, cols){
+  c.fillStyle = p.bg; c.fillRect(0, 0, W, H);
+  const a = p.angle * Math.PI / 180 + TAU * t;
+  const d = Math.hypot(W, H) / 2, cx = W / 2, cy = H / 2;
+  const g = c.createLinearGradient(cx - Math.cos(a) * d, cy - Math.sin(a) * d, cx + Math.cos(a) * d, cy + Math.sin(a) * d);
+  const m = cols.length, pairs = [];
+  for (let i = 0; i < m; i++){
+    const base = m === 1 ? 0.5 : i / (m - 1);
+    pairs.push([base + 0.16 * p.warp * Math.sin(TAU * ((i % 2 + 1) * t + i * 0.27)), cols[i]]);
+  }
+  sortedStops(g, pairs);
+  c.globalCompositeOperation = p.mix;
+  c.fillStyle = g; c.fillRect(0, 0, W, H);
+  c.globalCompositeOperation = 'source-over';
+}
+
+function drawConic(c, W, H, t, p, cols){
+  c.fillStyle = p.bg; c.fillRect(0, 0, W, H);
+  if (!c.createConicGradient) return drawLinear(c, W, H, t, p, cols);
+  const cx = W * (0.5 + 0.2 * p.spread * Math.sin(TAU * t));
+  const cy = H * (0.5 + 0.2 * p.spread * Math.cos(TAU * t));
+  const g = c.createConicGradient(TAU * t + p.angle * Math.PI / 180, cx, cy);
+  const m = cols.length;
+  for (let i = 0; i <= m; i++) g.addColorStop(i / m, cols[i % m]);
+  c.globalCompositeOperation = p.mix;
+  c.fillStyle = g; c.fillRect(0, 0, W, H);
+  if (p.warp > 0.02){
+    const r = Math.hypot(W, H) * (0.3 + p.warp * 0.4);
+    const hi = cols[cols.length - 1];
+    const rg = c.createRadialGradient(cx, cy, 0, cx, cy, r);
+    rg.addColorStop(0, rgba(hi, 0.55));
+    rg.addColorStop(1, rgba(hi, 0));
+    c.fillStyle = rg; c.fillRect(0, 0, W, H);
+  }
+  c.globalCompositeOperation = 'source-over';
+}
+
+function drawRings(c, W, H, t, p, cols){
+  c.fillStyle = p.bg; c.fillRect(0, 0, W, H);
+  const m = cols.length;
+  const cx = W * (0.5 + 0.2 * p.spread * Math.sin(TAU * t));
+  const cy = H * (0.5 + 0.2 * p.spread * Math.cos(TAU * t));
+  const R = Math.hypot(W, H) * (0.55 + p.blobSize * 0.6);
+  const N = Math.max(m, Math.max(2, p.bands) * m);
+  /* j runs below zero as well: at the end of the loop the pattern has advanced by m
+     rings, so without those the centre wraps to a flat disc and the loop jumps. */
+  for (let j = N + m; j >= -m; j--){
+    const rad = R * (j + t * m) / N;
+    if (rad <= 0.5) continue;
+    c.beginPath(); c.arc(cx, cy, rad, 0, TAU);
+    c.fillStyle = cols[((j % m) + m) % m]; c.fill();  /* j goes negative, and -4 % 5 is -4 in JS */
+  }
+}
+
+const DRAW = { mesh: drawMesh, aurora: drawAurora, waves: drawWaves, conic: drawConic, linear: drawLinear, rings: drawRings };
+
+/* ---------- 3b. effect layer ----------
+   Effects run on the finished gradient, before posterise and grain. Each one
+   samples the gradient rather than inventing colour, so the palette still
+   drives everything, and each is periodic in t so the loop stays closed. */
+
+function shadeRGB(c, amt){
+  if (amt >= 0) return [c[0] + (255 - c[0]) * amt, c[1] + (255 - c[1]) * amt, c[2] + (255 - c[2]) * amt];
+  const k = 1 + amt;
+  return [c[0] * k, c[1] * k, c[2] * k];
+}
+const rgbStr = c => 'rgb(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ')';
+const rgbaStr = (c, a) => 'rgba(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ',' + a + ')';
+const liftHex = (hex, amt) => shadeRGB(hex2rgb(hex), amt);
+
+/* One sample per grid cell. Drawing the source down to grid resolution lets the
+   browser average each cell for us, which is exactly what a halftone wants. */
+function fxSample(src, W, H, nx, ny, cell, cellY, ang){
+  const b = buf('fxs', nx, ny, true), x = b.x;
+  x.setTransform(1, 0, 0, 1, 0, 0);
+  x.globalAlpha = 1; x.globalCompositeOperation = 'source-over';
+  x.fillStyle = '#000'; x.fillRect(0, 0, nx, ny);
+  x.save();
+  x.translate(nx / 2, ny / 2);
+  x.scale(1 / cell, 1 / cellY);
+  x.rotate(-ang);
+  x.translate(-W / 2, -H / 2);
+  x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+  x.drawImage(src, 0, 0);
+  x.restore();
+  return x.getImageData(0, 0, nx, ny).data;
+}
+
+function roundRectPath(c, x, y, w, h, r){
+  r = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
+  if (c.roundRect){ c.roundRect(x, y, w, h, r); return; }
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+function dotShape(c, x, y, r, shape){
+  if (shape === 'square'){ c.rect(x - r, y - r, r * 2, r * 2); }
+  else if (shape === 'diamond'){
+    c.moveTo(x, y - r); c.lineTo(x + r, y); c.lineTo(x, y + r); c.lineTo(x - r, y); c.closePath();
+  } else { c.moveTo(x + r, y); c.arc(x, y, r, 0, TAU); }
+}
+
+/* Halftone: one dot per cell, sized by how dark the gradient is there. */
+function fxHalftone(ctx, W, H, t, p, src, cols){
+  const sc = W / 1000;
+  const cell = Math.max(2, p.htCell * sc);
+  const cellY = Math.max(1.2, cell * p.htAspect);
+  const ang = p.htAngle * Math.PI / 180;
+  const ac = Math.abs(Math.cos(ang)), as = Math.abs(Math.sin(ang));
+  const nx = Math.ceil((W * ac + H * as) / cell) + 2;
+  const ny = Math.ceil((W * as + H * ac) / cellY) + 2;
+  const d = fxSample(src, W, H, nx, ny, cell, cellY, ang);
+  ctx.fillStyle = p.htPaper; ctx.fillRect(0, 0, W, H);
+  const ca = Math.cos(ang), sa = Math.sin(ang);
+  const maxR = cell * 0.5 * p.htMax;
+  const bySource = p.htMode === 'source';
+  const floor = p.htMin || 0;
+  const lim = -maxR;
+  /* solid ink batches into a single path and one fill, which is far faster
+     than filling several thousand dots one at a time */
+  if (!bySource){ ctx.fillStyle = p.htInk; ctx.beginPath(); }
+  for (let j = 0; j < ny; j++){
+    const gy = (j - ny / 2 + 0.5) * cellY;
+    for (let i = 0; i < nx; i++){
+      const gx = (i - nx / 2 + 0.5) * cell;
+      const wx = W / 2 + gx * ca - gy * sa;
+      if (wx < lim || wx > W - lim) continue;
+      const wy = H / 2 + gx * sa + gy * ca;
+      if (wy < lim || wy > H - lim) continue;
+      const o = (j * nx + i) * 4;
+      let v = (d[o] * 0.299 + d[o + 1] * 0.587 + d[o + 2] * 0.114) / 255;
+      if (!p.htInvert) v = 1 - v;
+      v = Math.pow(clamp(v, 0, 1), p.htGamma);
+      const r = maxR * (floor + (1 - floor) * v);
+      if (r < 0.25) continue;
+      if (bySource){
+        ctx.fillStyle = 'rgb(' + d[o] + ',' + d[o + 1] + ',' + d[o + 2] + ')';
+        ctx.beginPath(); dotShape(ctx, wx, wy, r, p.htShape); ctx.fill();
+      } else {
+        dotShape(ctx, wx, wy, r, p.htShape);
+      }
+    }
+  }
+  if (!bySource) ctx.fill();
+}
+
+/* Dot glass: a grid of shaded discs that take their colour from the gradient. */
+function fxDotGlass(ctx, W, H, t, p, src, cols){
+  const sc = W / 1000;
+  const cell = Math.max(6, p.dgCell * sc);
+  const nx = Math.ceil(W / cell) + 1, ny = Math.ceil(H / cell) + 1;
+  const d = fxSample(src, W, H, nx, ny, cell, cell, 0);
+  ctx.drawImage(src, 0, 0);
+  const R = cell * 0.5 * (1 + p.dgOverlap);
+  const a = p.dgLight * Math.PI / 180, lx = Math.cos(a), ly = Math.sin(a);
+  const dep = p.dgDepth;
+  for (let j = 0; j < ny; j++){
+    const cy = H / 2 + (j - ny / 2 + 0.5) * cell;
+    for (let i = 0; i < nx; i++){
+      const cx = W / 2 + (i - nx / 2 + 0.5) * cell;
+      const o = (j * nx + i) * 4;
+      const c = [d[o], d[o + 1], d[o + 2]];
+      const g = ctx.createLinearGradient(cx - lx * R, cy - ly * R, cx + lx * R, cy + ly * R);
+      g.addColorStop(0, rgbStr(shadeRGB(c, dep)));
+      g.addColorStop(0.46, rgbStr(c));
+      g.addColorStop(1, rgbStr(shadeRGB(c, -dep)));
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU);
+      ctx.fillStyle = g; ctx.fill();
+      if (p.dgRim > 0.01){
+        ctx.strokeStyle = rgbaStr(shadeRGB(c, 0.85), p.dgRim);
+        ctx.lineWidth = Math.max(0.5, R * 0.07);
+        ctx.beginPath();
+        ctx.arc(cx, cy, R * 0.93, a + Math.PI - 0.95, a + Math.PI + 0.95);
+        ctx.stroke();
+      }
+    }
+  }
+}
+
+/* Fluted glass: each slat is a cylindrical lens showing a stretched slice. */
+function fxFluted(ctx, W, H, t, p, src, cols){
+  const n = Math.max(2, Math.round(p.flCount));
+  const ang = p.flAngle * Math.PI / 180;
+  const D = Math.hypot(W, H) * 1.06;
+  const sw = D / n;
+  const k = Math.max(1, p.flRefract);
+  const drift = p.flDrift ? (t % 1) * sw : 0;
+  ctx.drawImage(src, 0, 0);
+  ctx.save();
+  ctx.translate(W / 2, H / 2); ctx.rotate(ang);
+  const cover = clamp(p.flCover == null ? 1 : p.flCover, 0, 1);
+  if (cover < 0.999){
+    /* extent of the canvas along the slat-perpendicular axis, so the cut
+       lands in the same place whatever the slat angle */
+    const E = W * Math.abs(Math.cos(ang)) + H * Math.abs(Math.sin(ang));
+    ctx.beginPath(); ctx.rect(-E / 2, -D / 2, E * cover, D); ctx.clip();
+  }
+  for (let i = -1; i <= n; i++){
+    const x0 = -D / 2 + i * sw + drift;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x0, -D / 2, sw, D); ctx.clip();
+    const mid = x0 + sw / 2;
+    ctx.translate(mid, 0); ctx.scale(k, 1); ctx.translate(-mid, 0);
+    ctx.rotate(-ang); ctx.translate(-W / 2, -H / 2);
+    ctx.drawImage(src, 0, 0);
+    ctx.restore();
+    if (p.flEdge > 0.005){
+      const eg = ctx.createLinearGradient(x0, 0, x0 + sw, 0);
+      eg.addColorStop(0, 'rgba(255,255,255,' + (p.flEdge * 0.6) + ')');
+      eg.addColorStop(0.2, 'rgba(255,255,255,0)');
+      eg.addColorStop(0.8, 'rgba(0,0,0,0)');
+      eg.addColorStop(1, 'rgba(0,0,0,' + (p.flEdge * 0.7) + ')');
+      ctx.fillStyle = eg; ctx.fillRect(x0, -D / 2, sw, D);
+    }
+  }
+  ctx.restore();
+}
+
+/* Stacked panes: translucent sheets layered over the gradient with lit edges. */
+function fxPanes(ctx, W, H, t, p, src, cols){
+  ctx.drawImage(src, 0, 0);
+  const n = Math.max(2, Math.round(p.pnCount));
+  const spin = p.pnSpin ? TAU * t : 0;
+  const breathe = 1 + 0.05 * Math.sin(TAU * t);
+  const isArc = p.pnShape === 'arc';
+  for (let i = 0; i < n; i++){
+    const u = n === 1 ? 0 : i / (n - 1);
+    const s = (1 - u * (1 - p.pnScale)) * breathe;
+    const col = cols[i % cols.length];
+    const nxt = cols[(i + 1) % cols.length];
+    const w = W * s, h = H * s;
+    ctx.save();
+    ctx.translate(W / 2 + p.pnOffX * W * u, H / 2 + p.pnOffY * H * u);
+    ctx.rotate(p.pnRot * Math.PI / 180 + spin);
+    const g = ctx.createLinearGradient(-w / 2, -h / 2, w / 2, h / 2);
+    g.addColorStop(0, rgba(col, p.pnAlpha));
+    g.addColorStop(1, rgba(nxt, p.pnAlpha * 0.3));
+    if (isArc){
+      ctx.beginPath(); ctx.arc(0, 0, Math.min(w, h) * 0.5, 0, TAU);
+      ctx.lineWidth = Math.min(W, H) * 0.06 * (0.5 + p.pnRadius * 2);
+      ctx.strokeStyle = g;
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      if (p.pnShape === 'circle') { ctx.arc(0, 0, Math.min(w, h) / 2, 0, TAU); }
+      else roundRectPath(ctx, -w / 2, -h / 2, w, h, Math.min(w, h) * p.pnRadius);
+      ctx.fillStyle = g; ctx.fill();
+    }
+    if (p.pnGlow > 0.01 && !isArc){
+      const lit = liftHex(col, 0.6);
+      ctx.strokeStyle = rgbaStr(lit, Math.min(1, p.pnGlow));
+      ctx.lineWidth = Math.max(1, W * 0.0022);
+      ctx.shadowColor = rgbaStr(lit, p.pnGlow * 0.9);
+      ctx.shadowBlur = W * 0.016 * p.pnGlow;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+    ctx.restore();
+  }
+}
+
+const FX = { halftone: fxHalftone, dotglass: fxDotGlass, fluted: fxFluted, panes: fxPanes };
+const FX_LIST = [['none','None'],['halftone','Halftone dots'],['dotglass','Dot glass'],['fluted','Fluted glass'],['panes','Stacked panes']];
+
+function applyFX(ctx, W, H, t, p, cols){
+  const fn = FX[p.fx];
+  if (!fn) return;
+  const sb = buf('fxsrc', W, H);
+  sb.x.setTransform(1, 0, 0, 1, 0, 0);
+  sb.x.globalAlpha = 1; sb.x.globalCompositeOperation = 'source-over';
+  sb.x.clearRect(0, 0, W, H);
+  sb.x.drawImage(ctx.canvas, 0, 0);
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  fn(ctx, W, H, t, p, sb.c, cols);
+  ctx.restore();
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+}
+
+/* grain tiles, cycled per frame so the film grain never freezes */
+const GRAIN_TILES = [];
+function grainTile(i, cell){
+  const key = i + ':' + cell;
+  let g = GRAIN_TILES[i];
+  if (g && g.key === key) return g.c;
+  const size = 256, n = Math.max(2, Math.round(size / Math.max(1, cell)));
+  const src = document.createElement('canvas'); src.width = src.height = n;
+  const sx = src.getContext('2d');
+  const id = sx.createImageData(n, n), d = id.data;
+  const rnd = mulberry32(9137 + i * 7717);
+  for (let k = 0; k < n * n; k++){
+    const v = 128 + (rnd() * 2 - 1) * 127;
+    d[k * 4] = d[k * 4 + 1] = d[k * 4 + 2] = v; d[k * 4 + 3] = 255;
+  }
+  sx.putImageData(id, 0, 0);
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const cx = c.getContext('2d');
+  cx.imageSmoothingEnabled = cell > 1.6;
+  cx.drawImage(src, 0, 0, size, size);
+  GRAIN_TILES[i] = { key, c };
+  return c;
+}
+
+/* ---------- 3c. smooth base ----------
+   The gradient is drawn on a small layer and enlarged. Enlarging, blurring and
+   the colour filters used to run through the canvas, which rounds to 256 levels
+   at every step and never dithers. On slow dark gradients that printed contour
+   bands (one measured shade ran flat for 384 px) and, where the gradient is
+   nearly flat, the enlarged squares of the small layer. Now: the small layer is
+   drawn at twice the size and averaged (extra precision), then blur, colour,
+   enlarging and vignette run in floating point, and the one final rounding is
+   blue-noise dithered, so tone flows with no steps and no visible grain. */
+const SB = { R: null, G: null, B: null, T: null, img: new Map(), map: { key: '' } };
+
+function boxSizes(sigma, n){
+  const wIdeal = Math.sqrt(12 * sigma * sigma / n + 1);
+  let wl = Math.floor(wIdeal); if (wl % 2 === 0) wl--;
+  const wu = wl + 2;
+  const mm = Math.round((12 * sigma * sigma - n * wl * wl - 4 * n * wl - 3 * n) / (-4 * wl - 4));
+  const out = []; for (let i = 0; i < n; i++) out.push(i < mm ? wl : wu);
+  return out;
+}
+function boxPass(src, dst, w, h, r, horizontal){
+  const inv = 1 / (r + r + 1);
+  const lines = horizontal ? h : w, len = horizontal ? w : h;
+  const step = horizontal ? 1 : w;
+  for (let L = 0; L < lines; L++){
+    const base = horizontal ? L * w : L;
+    let acc = 0;
+    for (let k = -r; k <= r; k++) acc += src[base + (k < 0 ? 0 : k > len - 1 ? len - 1 : k) * step];
+    for (let i = 0; i < len; i++){
+      dst[base + i * step] = acc * inv;
+      const a = i + r + 1, b = i - r;
+      acc += src[base + (a > len - 1 ? len - 1 : a) * step] - src[base + (b < 0 ? 0 : b) * step];
+    }
+  }
+}
+/* gaussian by three box passes; edges extend rather than fade to black */
+function gaussBlur(ch, tmp, w, h, sigma){
+  for (const size of boxSizes(sigma, 3)){
+    const r = (size - 1) >> 1;
+    if (r < 1) continue;
+    boxPass(ch, tmp, w, h, r, true);
+    boxPass(tmp, ch, w, h, r, false);
+  }
+}
+function baseImage(ctx, W, H){
+  const key = W + 'x' + H;
+  let img = SB.img.get(key);
+  if (!img){
+    if (SB.img.size > 10) SB.img.clear();
+    img = ctx.createImageData(W, H);
+    SB.img.set(key, img);
+  }
+  return img;
+}
+function smoothBase(ctx, W, H, p, src, LW, LH, SS, blurPx, m){
+  const n = LW * LH;
+  if (!SB.R || SB.R.length !== n){
+    SB.R = new Float32Array(n); SB.G = new Float32Array(n); SB.B = new Float32Array(n); SB.T = new Float32Array(n);
+  }
+  const R = SB.R, G = SB.G, B = SB.B;
+  /* 1. average each supersampled block: sub-level precision from the 8 bit render */
+  const SW = LW * SS, inv = 1 / (SS * SS);
+  for (let y = 0; y < LH; y++){
+    for (let x = 0; x < LW; x++){
+      let r = 0, g = 0, b = 0;
+      for (let j = 0; j < SS; j++){
+        let o = ((y * SS + j) * SW + x * SS) * 4;
+        for (let i = 0; i < SS; i++, o += 4){ r += src[o]; g += src[o + 1]; b += src[o + 2]; }
+      }
+      const k = y * LW + x;
+      R[k] = r * inv; G[k] = g * inv; B[k] = b * inv;
+    }
+  }
+  /* 2. blur at the small size, same strength as blur(blurPx) on the enlarged image */
+  const sigma = blurPx * LW / (W + 2 * m);
+  if (sigma > 0.3){ gaussBlur(R, SB.T, LW, LH, sigma); gaussBlur(G, SB.T, LW, LH, sigma); gaussBlur(B, SB.T, LW, LH, sigma); }
+  /* 3. saturate, contrast, brightness: the CSS filter maths, clamped after each */
+  const s = p.saturation, c = p.contrast, br = p.brightness;
+  const a00 = 0.213 + 0.787 * s, a01 = 0.715 - 0.715 * s, a02 = 0.072 - 0.072 * s;
+  const a10 = 0.213 - 0.213 * s, a11 = 0.715 + 0.285 * s, a12 = 0.072 - 0.072 * s;
+  const a20 = 0.213 - 0.213 * s, a21 = 0.715 - 0.715 * s, a22 = 0.072 + 0.928 * s;
+  for (let k = 0; k < n; k++){
+    const r = R[k], g = G[k], b = B[k];
+    let r2 = a00 * r + a01 * g + a02 * b, g2 = a10 * r + a11 * g + a12 * b, b2 = a20 * r + a21 * g + a22 * b;
+    r2 = r2 < 0 ? 0 : r2 > 255 ? 255 : r2; g2 = g2 < 0 ? 0 : g2 > 255 ? 255 : g2; b2 = b2 < 0 ? 0 : b2 > 255 ? 255 : b2;
+    r2 = (r2 - 127.5) * c + 127.5; g2 = (g2 - 127.5) * c + 127.5; b2 = (b2 - 127.5) * c + 127.5;
+    r2 = r2 < 0 ? 0 : r2 > 255 ? 255 : r2; g2 = g2 < 0 ? 0 : g2 > 255 ? 255 : g2; b2 = b2 < 0 ? 0 : b2 > 255 ? 255 : b2;
+    r2 *= br; g2 *= br; b2 *= br;
+    R[k] = r2 > 255 ? 255 : r2; G[k] = g2 > 255 ? 255 : g2; B[k] = b2 > 255 ? 255 : b2;
+  }
+  /* 4. sampling tables for the enlarge: the same framing as drawing the small
+     layer into (-m, -m, W + 2m, H + 2m), which keeps every composition in place */
+  const mk = W + 'x' + H + '|' + LW + 'x' + LH + '|' + m;
+  const M = SB.map;
+  if (M.key !== mk){
+    M.key = mk;
+    M.x0 = new Int32Array(W); M.x1 = new Int32Array(W); M.fx = new Float32Array(W);
+    M.y0 = new Int32Array(H); M.y1 = new Int32Array(H); M.fy = new Float32Array(H);
+    const sx = LW / (W + 2 * m), sy = LH / (H + 2 * m);
+    for (let x = 0; x < W; x++){
+      const u = (x + 0.5 + m) * sx - 0.5, f = Math.floor(u);
+      M.x0[x] = f < 0 ? 0 : f > LW - 1 ? LW - 1 : f;
+      M.x1[x] = f + 1 < 0 ? 0 : f + 1 > LW - 1 ? LW - 1 : f + 1;
+      M.fx[x] = u - f;
+    }
+    for (let y = 0; y < H; y++){
+      const v = (y + 0.5 + m) * sy - 0.5, f = Math.floor(v);
+      M.y0[y] = (f < 0 ? 0 : f > LH - 1 ? LH - 1 : f) * LW;
+      M.y1[y] = (f + 1 < 0 ? 0 : f + 1 > LH - 1 ? LH - 1 : f + 1) * LW;
+      M.fy[y] = v - f;
+    }
+  }
+  /* 5. enlarge, vignette and dithered rounding in one pass */
+  const img = baseImage(ctx, W, H), d = img.data, BN = blueNoise();
+  const vig = p.vignette > 0.005 ? p.vignette : 0;
+  const r0 = Math.min(W, H) * 0.22, r1 = Math.max(W, H) * 0.74, span = 1 / (r1 - r0);
+  const hx = W / 2, hy = H / 2;
+  for (let y = 0; y < H; y++){
+    const y0 = M.y0[y], y1 = M.y1[y], fy = M.fy[y], gy = 1 - fy, dy = y + 0.5 - hy, dy2 = dy * dy;
+    const nrow = (y & 63) * 64;
+    let o = y * W * 4;
+    for (let x = 0; x < W; x++, o += 4){
+      const x0 = M.x0[x], x1 = M.x1[x], fx = M.fx[x], gx = 1 - fx;
+      const i00 = y0 + x0, i01 = y0 + x1, i10 = y1 + x0, i11 = y1 + x1;
+      let r = gy * (gx * R[i00] + fx * R[i01]) + fy * (gx * R[i10] + fx * R[i11]);
+      let g = gy * (gx * G[i00] + fx * G[i01]) + fy * (gx * G[i10] + fx * G[i11]);
+      let b = gy * (gx * B[i00] + fx * B[i01]) + fy * (gx * B[i10] + fx * B[i11]);
+      if (vig){
+        const dx = x + 0.5 - hx;
+        let a = (Math.sqrt(dx * dx + dy2) - r0) * span;
+        a = a < 0 ? 0 : a > 1 ? 1 : a;
+        const f = 1 - vig * a;
+        r *= f; g *= f; b *= f;
+      }
+      /* stochastic rounding: the clamped array rounds, the offset spreads it */
+      const t = BN[nrow + (x & 63)] - 0.5;
+      d[o] = r + t; d[o + 1] = g + t; d[o + 2] = b + t; d[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+let FILTER_OK = true;
+try { const tc = document.createElement('canvas').getContext('2d'); FILTER_OK = ('filter' in tc); } catch(e){ FILTER_OK = false; }
+
+/* main frame renderer. t in [0,1), fi = frame index for grain cycling */
+function drawFrame(ctx, W, H, t, p, fi){
+  /* Speed is whole cycles per loop. A fractional value would leave the motion
+     part way through a cycle at the wrap and put a visible jump in the GIF. */
+  const cyc = Math.max(1, Math.round(p.speed || 1));
+  if (cyc !== 1) t = (t * cyc) % 1;
+  const cols = p.colors.slice(0, Math.max(1, p.colorCount));
+  const LW = Math.max(40, Math.round(lerp(380, 56, p.softness)));
+  const LH = Math.max(24, Math.round(LW * H / W));
+  const SS = 2;
+  const lb = buf('low', LW * SS, LH * SS, true);
+  const l = lb.x;
+  l.setTransform(1, 0, 0, 1, 0, 0);
+  l.globalAlpha = 1; l.globalCompositeOperation = 'source-over';
+  l.clearRect(0, 0, LW * SS, LH * SS);
+  (DRAW[p.style] || drawMesh)(l, LW * SS, LH * SS, t, p, cols);
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  const blurPx = p.blur / 100 * 0.075 * W;
+  const m = Math.ceil(blurPx * 2) + 1;
+  smoothBase(ctx, W, H, p, l.getImageData(0, 0, LW * SS, LH * SS).data, LW, LH, SS, blurPx, m);
+
+  applyFX(ctx, W, H, t, p, cols);
+
+  if (p.posterize >= 2){
+    const id = ctx.getImageData(0, 0, W, H), d = id.data;
+    const L = p.posterize - 1, q = 255 / L;
+    for (let i = 0; i < d.length; i += 4){
+      d[i] = Math.round(d[i] / q) * q;
+      d[i + 1] = Math.round(d[i + 1] / q) * q;
+      d[i + 2] = Math.round(d[i + 2] / q) * q;
+      d[i + 3] = 255;
+    }
+    ctx.putImageData(id, 0, 0);
+  }
+
+  if (p.grain > 0.005){
+    const tile = grainTile(p.grainAnim ? ((fi | 0) % 8) : 0, p.grainSize * Math.max(1, W / 1000));
+    ctx.save();
+    ctx.globalCompositeOperation = 'overlay';
+    ctx.globalAlpha = p.grain;
+    const pat = ctx.createPattern(tile, 'repeat');
+    ctx.fillStyle = pat; ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+}
+
+/* ---------- 4. gif encoder ---------- */
+class ByteStream {
+  constructor(){ this.b = new Uint8Array(1 << 18); this.n = 0; }
+  need(k){
+    if (this.n + k <= this.b.length) return;
+    let s = this.b.length;
+    while (s < this.n + k) s *= 2;
+    const nb = new Uint8Array(s);
+    nb.set(this.b.subarray(0, this.n));
+    this.b = nb;
+  }
+  u8(v){ this.need(1); this.b[this.n++] = v & 255; }
+  u16(v){ this.need(2); this.b[this.n++] = v & 255; this.b[this.n++] = (v >> 8) & 255; }
+  raw(a){ this.need(a.length); this.b.set(a, this.n); this.n += a.length; }
+  str(s){ this.need(s.length); for (let i = 0; i < s.length; i++) this.b[this.n++] = s.charCodeAt(i) & 255; }
+  out(){ return this.b.subarray(0, this.n); }
+}
+
+const LZW_TABLE = new Int32Array(1 << 20);
+
+function lzwCompress(minCodeSize, px, bs){
+  const clear = 1 << minCodeSize, eoi = clear + 1;
+  let codeSize = minCodeSize + 1, next = eoi + 1;
+  const tbl = LZW_TABLE;
+  tbl.fill(-1);
+  let acc = 0, accBits = 0, cn = 0;
+  const chunk = new Uint8Array(255);
+  const flushChunk = () => { if (cn){ bs.u8(cn); bs.raw(chunk.subarray(0, cn)); cn = 0; } };
+  const putByte = b => { chunk[cn++] = b; if (cn === 255) flushChunk(); };
+  const emit = code => {
+    acc |= code << accBits; accBits += codeSize;
+    while (accBits >= 8){ putByte(acc & 255); acc >>>= 8; accBits -= 8; }
+  };
+  emit(clear);
+  let prefix = px[0];
+  if (prefix >= clear) throw new Error('GIF colour index ' + prefix + ' is outside a ' + clear + ' colour table (pixel 0)');
+  for (let i = 1; i < px.length; i++){
+    const k = px[i];
+    if (k >= clear) throw new Error('GIF colour index ' + k + ' is outside a ' + clear + ' colour table (pixel ' + i + ')');
+    const key = (prefix << 8) | k;
+    const v = tbl[key];
+    if (v >= 0){ prefix = v; continue; }
+    emit(prefix);
+    if (next === 4096){
+      emit(clear); tbl.fill(-1); next = eoi + 1; codeSize = minCodeSize + 1;
+    } else {
+      if (next >= (1 << codeSize)) codeSize++;
+      tbl[key] = next++;
+    }
+    prefix = k;
+  }
+  emit(prefix);
+  emit(eoi);
+  if (accBits > 0) putByte(acc & 255);
+  flushChunk();
+  bs.u8(0);
+}
+
+function gctBits(len){ let n = 1; while ((1 << n) < len) n++; return clamp(n, 1, 8); }
+
+function gifHeader(bs, w, h, pal, bits, loop){
+  bs.str('GIF89a'); bs.u16(w); bs.u16(h);
+  bs.u8(0x80 | 0x70 | (bits - 1)); bs.u8(0); bs.u8(0);
+  const len = 1 << bits;
+  for (let i = 0; i < len; i++){
+    const c = pal[i];
+    if (c){ bs.u8(c[0]); bs.u8(c[1]); bs.u8(c[2]); } else { bs.u8(0); bs.u8(0); bs.u8(0); }
+  }
+  bs.u8(0x21); bs.u8(0xFF); bs.u8(0x0B); bs.str('NETSCAPE2.0');
+  bs.u8(0x03); bs.u8(0x01); bs.u16(loop); bs.u8(0);
+}
+
+function gifFrame(bs, px, x, y, w, h, delayCs, tIdx, bits){
+  bs.u8(0x21); bs.u8(0xF9); bs.u8(0x04);
+  bs.u8((1 << 2) | (tIdx >= 0 ? 1 : 0));
+  bs.u16(delayCs);
+  bs.u8(tIdx >= 0 ? tIdx : 0);
+  bs.u8(0);
+  bs.u8(0x2C); bs.u16(x); bs.u16(y); bs.u16(w); bs.u16(h); bs.u8(0);
+  const mcs = Math.max(2, bits);
+  bs.u8(mcs);
+  lzwCompress(mcs, px, bs);
+}
+
+/* ---------- 5. quantiser ---------- */
+const HB = 6, HS = 1 << (HB * 3), HSHIFT = 8 - HB;
+/* Each palette build gets its own histogram. It used to be one shared set of
+   arrays, which was only safe while nothing else could build a palette at the
+   same time; the GIF view preview can, between the frames of an export. */
+function makeHist(){ return { n: new Uint32Array(HS), r: new Uint32Array(HS), g: new Uint32Array(HS), b: new Uint32Array(HS) }; }
+function histAdd(h, data, step){
+  step = (step || 1) * 4;
+  for (let i = 0; i < data.length; i += step){
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const k = ((r >> HSHIFT) << (HB * 2)) | ((g >> HSHIFT) << HB) | (b >> HSHIFT);
+    h.n[k]++; h.r[k] += r; h.g[k] += g; h.b[k] += b;
+  }
+}
+function histEntries(h){
+  const e = [];
+  for (let k = 0; k < HS; k++){
+    const n = h.n[k];
+    if (n) e.push({ r: h.r[k] / n, g: h.g[k] / n, b: h.b[k] / n, n });
+  }
+  return e;
+}
+
+function medianCut(ents, maxColors){
+  if (!ents.length) return [[0, 0, 0]];
+  const box = (s, e) => {
+    let rmin = 255, rmax = 0, gmin = 255, gmax = 0, bmin = 255, bmax = 0, n = 0;
+    for (let i = s; i < e; i++){
+      const t = ents[i];
+      if (t.r < rmin) rmin = t.r; if (t.r > rmax) rmax = t.r;
+      if (t.g < gmin) gmin = t.g; if (t.g > gmax) gmax = t.g;
+      if (t.b < bmin) bmin = t.b; if (t.b > bmax) bmax = t.b;
+      n += t.n;
+    }
+    const dr = (rmax - rmin) * 1.0, dg = (gmax - gmin) * 1.2, db = (bmax - bmin) * 0.8;
+    const axis = dr >= dg && dr >= db ? 'r' : (dg >= db ? 'g' : 'b');
+    const range = Math.max(dr, dg, db);
+    return { s, e, n, axis, range, score: range * Math.cbrt(n) };
+  };
+  const boxes = [box(0, ents.length)];
+  while (boxes.length < maxColors){
+    let bi = -1, best = 0;
+    for (let i = 0; i < boxes.length; i++){
+      const b = boxes[i];
+      if (b.e - b.s > 1 && b.range > 0 && b.score > best){ best = b.score; bi = i; }
+    }
+    if (bi < 0) break;
+    const b = boxes[bi], ax = b.axis;
+    const seg = ents.slice(b.s, b.e).sort((p, q) => p[ax] - q[ax]);
+    for (let i = 0; i < seg.length; i++) ents[b.s + i] = seg[i];
+    let acc = 0, cut = b.s + 1, half = b.n / 2;
+    for (let i = b.s; i < b.e; i++){ acc += ents[i].n; if (acc >= half){ cut = i + 1; break; } }
+    cut = clamp(cut, b.s + 1, b.e - 1);
+    boxes[bi] = box(b.s, cut);
+    boxes.push(box(cut, b.e));
+  }
+  return boxes.map(b => {
+    let R = 0, G = 0, B = 0, N = 0;
+    for (let i = b.s; i < b.e; i++){ const t = ents[i]; R += t.r * t.n; G += t.g * t.n; B += t.b * t.n; N += t.n; }
+    return [clamp(Math.round(R / N), 0, 255), clamp(Math.round(G / N), 0, 255), clamp(Math.round(B / N), 0, 255)];
+  });
+}
+
+class Quant {
+  constructor(pal){
+    this.n = pal.length;
+    this.R = new Uint8Array(this.n); this.G = new Uint8Array(this.n); this.B = new Uint8Array(this.n);
+    for (let i = 0; i < this.n; i++){ this.R[i] = pal[i][0]; this.G[i] = pal[i][1]; this.B[i] = pal[i][2]; }
+    /* nearest-colour lookups cached per palette; a shared cache handed one
+       palette's answers to another whenever two were alive at once */
+    this.cache = new Int16Array(HS).fill(-1);
+    /* Median distance from each palette colour to its nearest neighbour: the real
+       spacing of this palette, which is what a positional dither should span. */
+    const nn = new Float32Array(this.n);
+    for (let i = 0; i < this.n; i++){
+      let best = Infinity;
+      for (let j = 0; j < this.n; j++){
+        if (i === j) continue;
+        const dr = this.R[i] - this.R[j], dg = this.G[i] - this.G[j], db = this.B[i] - this.B[j];
+        const d = dr * dr + dg * dg + db * db;
+        if (d < best) best = d;
+      }
+      nn[i] = this.n > 1 ? Math.sqrt(best) : 0;
+    }
+    nn.sort();
+    this.gap = this.n > 1 ? nn[this.n >> 1] : 0;
+  }
+  near(r, g, b){
+    const key = ((r >> HSHIFT) << (HB * 2)) | ((g >> HSHIFT) << HB) | (b >> HSHIFT);
+    const c = this.cache[key];
+    if (c >= 0) return c;
+    const half = 1 << (HSHIFT - 1);
+    const qr = ((r >> HSHIFT) << HSHIFT) + half, qg = ((g >> HSHIFT) << HSHIFT) + half, qb = ((b >> HSHIFT) << HSHIFT) + half;
+    let best = 0, bd = Infinity;
+    for (let i = 0; i < this.n; i++){
+      const dr = qr - this.R[i], dg = qg - this.G[i], db = qb - this.B[i];
+      const d = dr * dr * 0.30 + dg * dg * 0.59 + db * db * 0.11;
+      if (d < bd){ bd = d; best = i; }
+    }
+    this.cache[key] = best;
+    return best;
+  }
+}
+
+const BAYER8 = [
+   0,32, 8,40, 2,34,10,42,
+  48,16,56,24,50,18,58,26,
+  12,44, 4,36,14,46, 6,38,
+  60,28,52,20,62,30,54,22,
+   3,35,11,43, 1,33, 9,41,
+  51,19,59,27,49,17,57,25,
+  15,47, 7,39,13,45, 5,37,
+  63,31,55,23,61,29,53,21
+];
+
+/* 64x64 blue noise by void-and-cluster (Ulichney 1993), toroidal, built once on
+   first use in about 30 ms. Its energy sits at high frequencies, so the eye
+   averages it into smooth tone instead of seeing the grid a Bayer matrix prints. */
+let BLUE64 = null;
+function blueNoise(){
+  if (BLUE64) return BLUE64;
+  const N = 64, S = N * N, sigma = 1.5, R = Math.ceil(sigma * 3), K = [];
+  for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) K.push(dx, dy, Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma)));
+  const E = new Float64Array(S), B = new Uint8Array(S);
+  const splat = (p, sgn) => {
+    const x = p % N, y = (p / N) | 0;
+    for (let k = 0; k < K.length; k += 3) E[((y + K[k + 1] + N) % N) * N + ((x + K[k] + N) % N)] += sgn * K[k + 2];
+  };
+  let seed = 7;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  const ones = Math.floor(S * 0.1);
+  for (let n = 0; n < ones;){ const p = Math.floor(rnd() * S); if (!B[p]){ B[p] = 1; splat(p, 1); n++; } }
+  const cluster = () => { let b = -1, v = -1e18; for (let p = 0; p < S; p++) if (B[p] && E[p] > v){ v = E[p]; b = p; } return b; };
+  const voidAt  = () => { let b = -1, v =  1e18; for (let p = 0; p < S; p++) if (!B[p] && E[p] < v){ v = E[p]; b = p; } return b; };
+  for (let it = 0; it < S; it++){
+    const c = cluster(); B[c] = 0; splat(c, -1);
+    const v = voidAt();
+    if (v === c){ B[c] = 1; splat(c, 1); break; }
+    B[v] = 1; splat(v, 1);
+  }
+  const rank = new Float32Array(S), B0 = B.slice(), E0 = E.slice();
+  for (let r = ones - 1; r >= 0; r--){ const c = cluster(); B[c] = 0; splat(c, -1); rank[c] = r; }
+  B.set(B0); E.set(E0);
+  for (let r = ones; r < S; r++){ const v = voidAt(); B[v] = 1; splat(v, 1); rank[v] = r; }
+  for (let p = 0; p < S; p++) rank[p] = (rank[p] + 0.5) / S;
+  return (BLUE64 = rank);
+}
+
+function quantize(data, idx, w, h, q, dither, strength){
+  if (dither === 'fs'){
+    let cur = new Float32Array((w + 2) * 3), nxt = new Float32Array((w + 2) * 3);
+    for (let y = 0; y < h; y++){
+      for (let x = 0; x < w; x++){
+        const o = (y * w + x) * 4, e = (x + 1) * 3;
+        const r = clamp(data[o] + cur[e], 0, 255) | 0;
+        const g = clamp(data[o + 1] + cur[e + 1], 0, 255) | 0;
+        const b = clamp(data[o + 2] + cur[e + 2], 0, 255) | 0;
+        const i = q.near(r, g, b);
+        idx[y * w + x] = i;
+        const dr = r - q.R[i], dg = g - q.G[i], db = b - q.B[i];
+        cur[e + 3] += dr * 0.4375; cur[e + 4] += dg * 0.4375; cur[e + 5] += db * 0.4375;
+        nxt[e - 3] += dr * 0.1875; nxt[e - 2] += dg * 0.1875; nxt[e - 1] += db * 0.1875;
+        nxt[e]     += dr * 0.3125; nxt[e + 1] += dg * 0.3125; nxt[e + 2] += db * 0.3125;
+        nxt[e + 3] += dr * 0.0625; nxt[e + 4] += dg * 0.0625; nxt[e + 5] += db * 0.0625;
+      }
+      const tmp = cur; cur = nxt; nxt = tmp; nxt.fill(0);
+    }
+  } else if (dither === 'ordered' || dither === 'blue'){
+    /* The swing is scaled to this palette's real spacing. It used to assume the
+       palette was spread over the whole colour cube, but median cut crowds the
+       palette into the colours actually used, so the old swing overshot the gap
+       1.2 to 2.2 times and printed a visible crosshatch over every gradient.
+       Measured on real artwork: nearly all the anti-banding benefit arrives by
+       0.6 to 0.75 of the gap, and 0.6 carries about 35 per cent less grain. */
+    const amp = q.gap * (strength == null ? 0.6 : strength);
+    const map = dither === 'blue' ? blueNoise() : null;
+    for (let y = 0; y < h; y++){
+      for (let x = 0; x < w; x++){
+        const o = (y * w + x) * 4;
+        const t = map ? map[(y & 63) * 64 + (x & 63)] : BAYER8[(y & 7) * 8 + (x & 7)] / 63;
+        const th = (t - 0.5) * amp;
+        idx[y * w + x] = q.near(
+          clamp(data[o] + th, 0, 255) | 0,
+          clamp(data[o + 1] + th, 0, 255) | 0,
+          clamp(data[o + 2] + th, 0, 255) | 0);
+      }
+    }
+  } else {
+    const n = w * h;
+    for (let i = 0; i < n; i++){
+      const o = i * 4;
+      idx[i] = q.near(data[o], data[o + 1], data[o + 2]);
+    }
+  }
+}
+
+/* replace unchanged pixels with the transparent index, return changed bounding box */
+function applyDelta(idx, state, data, q, thresh, tIdx, w, h){
+  const t2 = thresh * thresh;
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+  for (let y = 0; y < h; y++){
+    const row = y * w;
+    for (let x = 0; x < w; x++){
+      const p = row + x, prev = state[p], cur = idx[p];
+      let same = prev === cur;
+      if (!same && t2 > 0){
+        const o = p * 4;
+        const dr = data[o] - q.R[prev], dg = data[o + 1] - q.G[prev], db = data[o + 2] - q.B[prev];
+        if (dr * dr * 0.30 + dg * dg * 0.59 + db * db * 0.11 <= t2) same = true;
+      }
+      if (same){ idx[p] = tIdx; }
+      else {
+        state[p] = cur;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) return null;
+  return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+}
+
+function cropIndices(idx, w, bb){
+  if (bb.x === 0 && bb.w === w) return idx.subarray(bb.y * w, (bb.y + bb.h) * w);
+  const out = new Uint8Array(bb.w * bb.h);
+  for (let y = 0; y < bb.h; y++){
+    const s = (bb.y + y) * w + bb.x;
+    out.set(idx.subarray(s, s + bb.w), y * bb.w);
+  }
+  return out;
+}
+
+/* ---------- 6. export pipeline ---------- */
+/* Crop works by rendering the composition larger and cutting the window out of
+   it at full resolution, so cropping magnifies everything, dots and grain
+   included, exactly as cropping a photograph would. */
+/* Each axis zooms on its own. Zooming one axis further than the other stretches
+   the composition on that axis, but the window cut out of it is still a plain
+   rectangle at output size, so nothing in the exported frame is distorted. */
+function cropZoom(x){
+  const capX = Math.max(1, 4096 / x.w), capY = Math.max(1, 4096 / x.h);
+  return {
+    zx: Math.min(Math.max(1, x.zoomX || 1), capX),
+    zy: Math.min(Math.max(1, x.zoomY || 1), capY)
+  };
+}
+function virtualSize(x){
+  const z = cropZoom(x);
+  return { w: Math.round(x.w * z.zx), h: Math.round(x.h * z.zy), zx: z.zx, zy: z.zy };
+}
+/* Resolved once from the export config, so the preview frames exactly what the
+   export will, including any cap the export size forces. */
+function cropOf(x){
+  const z = cropZoom(x);
+  return { zx: z.zx, zy: z.zy, panX: clamp(x.panX == null ? 0.5 : x.panX, 0, 1), panY: clamp(x.panY == null ? 0.5 : x.panY, 0, 1) };
+}
+function renderOut(ctx, W, H, t, p, fi, crop){
+  const zx = crop ? crop.zx : 1, zy = crop ? crop.zy : 1;
+  if (zx <= 1.001 && zy <= 1.001){ drawFrame(ctx, W, H, t, p, fi); return; }
+  const VW = Math.round(W * zx), VH = Math.round(H * zy);
+  const b = buf('crop', VW, VH);
+  drawFrame(b.x, VW, VH, t, p, fi);
+  const ox = Math.round(crop.panX * (VW - W));
+  const oy = Math.round(crop.panY * (VH - H));
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(b.c, ox, oy, W, H, 0, 0, W, H);
+}
+
+function frameCount(x){ return Math.max(2, Math.round(x.fps * x.dur)); }
+function delayCs(x){ return Math.max(2, Math.round(100 / x.fps)); }
+function realFps(x){ return 100 / delayCs(x); }
+
+function snapshotParams(){ return JSON.parse(JSON.stringify(P)); }
+
+async function buildPalette(x, params, want, onProg){
+  const n = frameCount(x);
+  const sw = Math.min(x.w, 240), sh = Math.max(1, Math.round(sw * x.h / x.w));
+  const hist = makeHist();
+  const samples = Math.min(n, 10);
+  for (let i = 0; i < samples; i++){
+    const fi = Math.round(i * n / samples);
+    /* render and read back in one step, so a yield can never land between
+       drawing into the shared buffer and reading it */
+    const b = buf('pal', sw, sh, true);
+    renderOut(b.x, sw, sh, fi / n, params, fi, cropOf(x));
+    histAdd(hist, b.x.getImageData(0, 0, sw, sh).data, 1);
+    if (onProg) onProg((i + 1) / samples);
+    await breathe();
+  }
+  return medianCut(histEntries(hist), Math.max(2, want));
+}
+
+async function encodeGIF(x, params, onProg, token){
+  if (typeof ENCODING === 'number') ENCODING++;
+  try { return await encodeGIFInner(x, params, onProg, token); }
+  finally { if (typeof ENCODING === 'number') ENCODING--; }
+}
+async function encodeGIFInner(x, params, onProg, token){
+  const n = frameCount(x), dcs = delayCs(x);
+  const reserve = x.deltaOn ? 1 : 0;
+  const pal = await buildPalette(x, params, Math.min(256 - reserve, x.maxColors), p => onProg && onProg(p * 0.12, 'Building palette'));
+  const q = new Quant(pal);
+  const tIdx = reserve ? pal.length : -1;
+  const bits = gctBits(pal.length + reserve);
+  const bs = new ByteStream();
+  gifHeader(bs, x.w, x.h, pal, bits, x.loop);
+
+  const idx = new Uint8Array(x.w * x.h);
+  let state = null;
+
+  const b = buf('out', x.w, x.h, true);
+  for (let f = 0; f < n; f++){
+    if (token && token.cancel) return null;
+    renderOut(b.x, x.w, x.h, f / n, params, f, cropOf(x));
+    const data = b.x.getImageData(0, 0, x.w, x.h).data;
+    quantize(data, idx, x.w, x.h, q, x.dither, x.ditherAmt);
+    /* With frame delta off there is no transparent index in the palette, so every
+       frame must be a complete opaque picture. Running the delta step anyway used
+       to write -1 into unchanged pixels, which a byte stores as 255, an index the
+       colour table does not have. That corrupted every frame after the first:
+       Chrome papered over it, Apple's decoder and Pillow rejected the file. */
+    if (f === 0 || !x.deltaOn){
+      gifFrame(bs, idx, 0, 0, x.w, x.h, dcs, -1, bits);
+      if (x.deltaOn) state = Uint8Array.from(idx);
+    } else {
+      const bb = applyDelta(idx, state, data, q, x.deltaThresh, tIdx, x.w, x.h);
+      if (!bb){
+        gifFrame(bs, new Uint8Array([tIdx]), 0, 0, 1, 1, dcs, tIdx, bits);
+      } else {
+        gifFrame(bs, cropIndices(idx, x.w, bb), bb.x, bb.y, bb.w, bb.h, dcs, tIdx, bits);
+      }
+    }
+    if (onProg) onProg(0.12 + 0.88 * (f + 1) / n, 'Frame ' + (f + 1) + ' of ' + n);
+    await breathe();
+  }
+  bs.u8(0x3B);
+  return bs.out().slice();
+}
+
+/* Size is measured, never predicted.
+   Two sampling estimators were built and thrown away first. A frame probe ran
+   13 to 32 per cent light, always low, because a real encode carries stale
+   pixels forward that a fresh probe cannot reproduce. A two scale power law
+   extrapolation was better at about 6 per cent, but it cost 1.2s against 1.4s
+   for a real 800x800 60 frame encode. Guessing was neither faster nor honest,
+   so the tool just encodes and reports the true byte count. The bytes are kept
+   so that exporting straight after measuring costs nothing. */
+let LAST = { key: '', bytes: null };
+/* Bytes per frame-pixel. Seeded from measurements across several presets, then
+   replaced by the real figure every time a GIF is actually encoded, so the
+   rough readout converges on this machine and this artwork. */
+const CAL = { bpp: 0.255, dither: 'blue', colors: 48 };
+const DITHER_COST = { none: 0.8, ordered: 1, blue: 1.07, fs: 1.3 };
+function roughBytes(x){
+  const f = (DITHER_COST[x.dither] || 1) / (DITHER_COST[CAL.dither] || 1)
+          * Math.pow(Math.max(4, x.maxColors) / CAL.colors, 0.35);
+  return Math.round(CAL.bpp * frameCount(x) * x.w * x.h * f);
+}
+function calibrate(x, bytes){
+  const n = frameCount(x) * x.w * x.h;
+  if (n > 0){ CAL.bpp = bytes / n; CAL.dither = x.dither; CAL.colors = x.maxColors; }
+}
+function cfgKey(x, params){
+  return [x.w, x.h, x.fps, x.dur, x.maxColors, x.dither, x.ditherAmt, x.deltaOn, x.deltaThresh, x.loop,
+          x.zoomX, x.zoomY, x.panX, x.panY].join(',') + '|' + JSON.stringify(params);
+}
+async function measureGIF(x, params, onProg, token){
+  const key = cfgKey(x, params);
+  if (LAST.key === key && LAST.bytes) return LAST.bytes;
+  const bytes = await encodeGIF(x, params, onProg, token);
+  if (bytes){ LAST = { key, bytes }; calibrate(x, bytes.length); }
+  return bytes;
+}
+
+/* Reduction plan, ordered by measured cost per unit of visible damage.
+   Colours come first, since blue noise keeps a small palette reading smooth.
+   Delta tolerance is deliberately absent: raising it was the cause of the
+   smeared, blotchy frames late in the loop, so it is never traded for bytes. */
+const PLAN = [
+  { k: 'colors', v: 128 }, { k: 'colors', v: 96 },
+  { k: 'colors', v: 64 },  { k: 'fps', v: 16 },
+  { k: 'colors', v: 48 },  { k: 'fps', v: 12.5 },   { k: 'colors', v: 32 },
+  { k: 'scale', v: 0.8 },  { k: 'fps', v: 10 },
+  { k: 'colors', v: 24 },  { k: 'scale', v: 0.65 }, { k: 'colors', v: 16 },
+  { k: 'fps', v: 8 },      { k: 'scale', v: 0.5 },  { k: 'colors', v: 12 },
+  { k: 'scale', v: 0.4 },  { k: 'colors', v: 8 },   { k: 'fps', v: 6.25 },
+  { k: 'scale', v: 0.32 }
+];
+
+/* walk the plan from i, apply the first move that is an actual reduction */
+function nextStep(x, base, i){
+  const c = Object.assign({}, x);
+  if (!c.deltaOn){ c.deltaOn = true; c.deltaThresh = Math.min(c.deltaThresh || 4, 4); return { cfg: c, i }; }
+  for (; i < PLAN.length; i++){
+    const m = PLAN[i];
+    if (m.k === 'colors' && c.maxColors > m.v){ c.maxColors = m.v; return { cfg: c, i: i + 1 }; }
+    if (m.k === 'fps' && c.fps > m.v){ c.fps = m.v; return { cfg: c, i: i + 1 }; }
+    if (m.k === 'delta' && c.deltaThresh < m.v){ c.deltaThresh = m.v; return { cfg: c, i: i + 1 }; }
+    if (m.k === 'scale' && c.w > Math.round(base.w * m.v)){
+      c.w = Math.max(48, Math.round(base.w * m.v / 2) * 2);
+      c.h = Math.max(48, Math.round(base.h * m.v / 2) * 2);
+      return { cfg: c, i: i + 1 };
+    }
+  }
+  return null;
+}
+
+async function fitToTarget(x, params, targetBytes, onProg, token){
+  const base = { w: x.w, h: x.h };
+  let cur = Object.assign({}, x), best = null, pi = 0, tries = 0;
+  const MAX = 9;
+  while (tries < MAX){
+    if (token && token.cancel) return null;
+    const label = cur.w + 'x' + cur.h + ', ' + cur.maxColors + ' colours, ' + (+realFps(cur).toFixed(1)) + ' fps';
+    const bytes = await measureGIF(cur, params,
+      (p, l) => onProg((tries + p) / MAX, label + '  |  ' + l), token);
+    if (!bytes) return null;
+    best = { cfg: cur, bytes };
+    if (bytes.length <= targetBytes) return best;
+    /* jump further down the plan when we are nowhere near, so a big overshoot
+       still settles in a handful of encodes rather than twenty */
+    const ratio = bytes.length / targetBytes;
+    let jump = ratio > 6 ? 4 : ratio > 3 ? 3 : ratio > 1.6 ? 2 : 1;
+    let nx = null;
+    while (jump-- > 0){
+      const step = nextStep(cur, base, pi);
+      if (!step) break;
+      nx = step; cur = step.cfg; pi = step.i;
+    }
+    if (!nx) return best;
+    tries++;
+  }
+  return best;
+}
+
+/* ---------- other exports ---------- */
+/* Stored zip (no compression: PNG is already compressed). Enough of the format
+   for Finder, ezgif and every unzip tool: local headers, central directory, end. */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++){ let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+  return t;
+})();
+function crc32(u8){ let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function makeZip(files){
+  const enc = new TextEncoder(), parts = [], central = [];
+  let offset = 0;
+  for (const f of files){
+    const name = enc.encode(f.name), crc = crc32(f.data), size = f.data.length;
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(8, 0, true);
+    lh.setUint16(10, 0, true); lh.setUint16(12, 0x21, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, size, true); lh.setUint32(22, size, true);
+    lh.setUint16(26, name.length, true);
+    parts.push(new Uint8Array(lh.buffer), name, f.data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true);
+    ch.setUint16(12, 0, true); ch.setUint16(14, 0x21, true);
+    ch.setUint32(16, crc, true); ch.setUint32(20, size, true); ch.setUint32(24, size, true);
+    ch.setUint16(28, name.length, true); ch.setUint32(42, offset, true);
+    central.push(new Uint8Array(ch.buffer), name);
+    offset += 30 + name.length + size;
+  }
+  let cd = 0; central.forEach(c => cd += c.length);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+  end.setUint32(12, cd, true); end.setUint32(16, offset, true);
+  return new Blob(parts.concat(central, [new Uint8Array(end.buffer)]), { type: 'application/zip' });
+}
+
+/* Every frame of the loop as a lossless PNG, for a dedicated GIF encoder. gifski
+   in particular builds a palette per frame and dithers across time, which a
+   single global palette cannot match. */
+async function exportFrames(onProg, token){
+  const zip = await renderFramesZip(onProg, token);
+  if (!zip) return null;
+  download(zip, fileName('zip').replace(/\.zip$/, '-frames.zip'));
+  toast(frameCount(X) + ' PNG frames saved, ' + fmtBytes(zip.size));
+  return zip;
+}
+async function renderFramesZip(onProg, token){
+  const n = frameCount(X), fps = realFps(X), cs = delayCs(X);
+  const pad = Math.max(3, String(n - 1).length);
+  const b = buf('frames', X.w, X.h, false);
+  const files = [];
+  for (let f = 0; f < n; f++){
+    if (token && token.cancel) return null;
+    renderOut(b.x, X.w, X.h, f / n, P, f, cropOf(X));
+    const blob = await new Promise(r => b.c.toBlob(r, 'image/png'));
+    files.push({ name: 'frame_' + String(f).padStart(pad, '0') + '.png', data: new Uint8Array(await blob.arrayBuffer()) });
+    onProg((f + 1) / n, 'Frame ' + (f + 1) + ' of ' + n);
+    await breathe();
+  }
+  const fpsTxt = String(+fps.toFixed(3));
+  const readme = [
+    'Gradient GIF Studio frames',
+    n + ' frames, ' + X.w + ' x ' + X.h + ', one seamless loop at ' + fpsTxt + ' fps (' + (cs * 10) + ' ms per frame).',
+    'The loop is already closed: do not repeat frame 0 at the end.',
+    '',
+    'Best quality: gifski (free, runs on this Mac, nothing is uploaded)',
+    '  Gradient Creator sets it up in bin/gifski on first run (python3 start.py): Export best GIF uses it in one click.',
+    '  To run it yourself (get it with: brew install gifski):',
+    '  gifski --fps ' + fpsTxt + ' --quality 100 --motion-quality 100 --lossy-quality 80 --width ' + X.w + ' --height ' + X.h + ' -o loop.gif frame_*.png',
+    '  Keep --width and --height: without them gifski halves anything much bigger than 800 x 600.',
+    '  Keep --motion-quality at 100: lower values leave blotches and colour smudges on moving gradients.',
+    '  For a smaller file lower --lossy-quality (60 still looks clean, below 40 specks appear).',
+    '  To scale it down, drop --height and give a smaller --width.',
+    '',
+    'In a browser: ezgif.com (uploads the frames to their server)',
+    '  Open https://ezgif.com/maker, upload this zip, set Delay to ' + cs + ', make the GIF, then use Optimize.',
+    '',
+    'ffmpeg',
+    '  ffmpeg -framerate ' + fpsTxt + ' -i frame_%0' + pad + 'd.png -vf "split[a][b];[a]palettegen=stats_mode=full[p];[b][p]paletteuse=dither=sierra2_4a" -loop 0 loop.gif',
+    '',
+    'Photoshop',
+    '  File > Scripts > Load Files into Stack, then Timeline > Make Frames From Layers,',
+    '  set every frame to ' + (cs / 100).toFixed(2) + ' s, then File > Export > Save for Web (Legacy) as GIF.',
+    ''
+  ].join('\n');
+  files.push({ name: 'README.txt', data: new TextEncoder().encode(readme) });
+  return makeZip(files);
+}
+
+/* ---------- one click: encode on this Mac with the best installed encoder ---------- */
+let LOCAL = null;   /* engines reported by the studio's local server, null when not served by it */
+async function detectLocal(){
+  if (location.protocol === 'file:') return null;
+  try {
+    const r = await fetch('/api/health', { cache: 'no-store' });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j && j.ok ? j.engines : null;
+  } catch(e){ return null; }
+}
+function localEngineName(){
+  if (!LOCAL) return null;
+  if (LOCAL.gifski && LOCAL.gifski.available) return 'gifski';
+  if (LOCAL.pillow && LOCAL.pillow.available) return 'Pillow';
+  return null;
+}
+async function doExportLocal(skipGuard){
+  return guarded(async () => {
+    const engine = localEngineName();
+    if (!engine){ toast('No local encoder found. Start the studio with: python3 start.py'); return; }
+    if (!skipGuard && measureMotion() < STILL){
+      const pick = await askOverlay('This loop barely moves',
+        'Only a tiny part of the picture changes over the loop, so the GIF will look like a still image.',
+        [['Cancel', 'cancel'], ['Export anyway', 'go']]);
+      if (pick !== 'go') return;
+    }
+    showOverlay('Rendering frames for ' + engine);
+    const t0 = performance.now();
+    const zip = await renderFramesZip((p, l) => prog(p * 0.5, l), token);
+    if (!zip){ hideOverlay(); return; }
+    $('#ovTitle').textContent = 'Encoding with ' + engine;
+    prog(0.55, 'Finding the best quality under ' + fmtBytes(X.targetKB * 1024));
+    const target = X.targetKB * 1024;
+    const qs = 'fps=' + encodeURIComponent(realFps(X)) + '&quality=' + (X.localQuality | 0) + '&target=' + target + '&engine=auto';
+    const r = await fetch('/api/gif?' + qs, { method: 'POST', body: zip, headers: { 'Content-Type': 'application/zip' } });
+    if (!r.ok){
+      let msg = r.statusText;
+      try { msg = (await r.json()).error || msg; } catch(e){}
+      throw new Error(msg);
+    }
+    const gif = await r.blob();
+    prog(1, 'Done');
+    hideOverlay();
+    const used = r.headers.get('X-Engine') || engine;
+    const qUsed = +(r.headers.get('X-Quality') || X.localQuality);
+    const fits = r.headers.get('X-Fits') !== '0';
+    const unreachable = r.headers.get('X-Reason') === 'unreachable';
+    /* no question asked: the server already chose the best quality that fits */
+    download(gif, fileName('gif'));
+    LAST_LOCAL = { bytes: gif.size, engine: used, quality: qUsed, fits };
+    refresh();
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    toast(fits
+      ? 'GIF saved: ' + fmtBytes(gif.size) + ' at quality ' + qUsed + ' with ' + used + ', ' + secs + 's'
+      : 'Saved at full quality, ' + fmtBytes(gif.size) + '. Lowering quality could not reach your ' + fmtBytes(X.targetKB * 1024) + ' target, so it kept full quality. Shrink the canvas or frame rate to get there.');
+  });
+}
+let LAST_LOCAL = null;
+async function doExportFrames(){
+  return guarded(async () => {
+    showOverlay('Rendering PNG frames');
+    await exportFrames(prog, token);
+    hideOverlay();
+  });
+}
+async function exportPNG(){
+  const b = buf('out', X.w, X.h, true);
+  const fi = Math.round(previewT * frameCount(X)) % frameCount(X);
+  renderOut(b.x, X.w, X.h, fi / frameCount(X), P, fi, cropOf(X));
+  const blob = await new Promise(r => b.c.toBlob(r, 'image/png'));
+  download(blob, fileName('png'));
+  toast('PNG saved, ' + fmtBytes(blob.size));
+}
+
+async function exportWEBM(onProg, token){
+  const n = frameCount(X), fps = X.fps;
+  const b = buf('out', X.w, X.h, false);
+  const stream = b.c.captureStream(0);
+  const track = stream.getVideoTracks()[0];
+  let mime = 'video/webm;codecs=vp9';
+  if (!MediaRecorder.isTypeSupported(mime)) mime = 'video/webm;codecs=vp8';
+  if (!MediaRecorder.isTypeSupported(mime)) mime = 'video/webm';
+  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: Math.round(X.w * X.h * fps * 0.09) });
+  const parts = [];
+  rec.ondataavailable = e => { if (e.data.size) parts.push(e.data); };
+  const done = new Promise(r => { rec.onstop = r; });
+  rec.start();
+  for (let f = 0; f < n * 2; f++){
+    if (token && token.cancel){ rec.stop(); return null; }
+    renderOut(b.x, X.w, X.h, (f % n) / n, P, f % n, cropOf(X));
+    if (track.requestFrame) track.requestFrame();
+    onProg((f + 1) / (n * 2), 'Frame ' + (f + 1) + ' of ' + n * 2);
+    await new Promise(r => setTimeout(r, Math.max(8, 1000 / fps)));
+  }
+  rec.stop();
+  await done;
+  const blob = new Blob(parts, { type: mime });
+  download(blob, fileName('webm'));
+  toast('WebM saved, ' + fmtBytes(blob.size) + ' (loops twice)');
+  return blob;
+}
+
+function fileName(ext){
+  const d = new Date();
+  const pad = v => String(v).padStart(2, '0');
+  return 'gradient-' + P.style + '-' + X.w + 'x' + X.h + '-' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.' + ext;
+}
+
+/* ---------- 7. ui ---------- */
+const REFRESH = [];
+const cv = $('#preview');
+const pctx = cv.getContext('2d', { willReadFrequently: true });
+let PW = 600, PH = 600;
+let playing = true, previewT = 0, lastT = 0;
+let fileBytes = null, sizeStale = true;
+let activePreset = null;
+let token = { cancel: false };
+
+function markStale(){ sizeStale = true; paintSize(); }
+function invalidate(){ shapeCache.key = ''; activePreset = null; markStale(); save(); }
+
+/* generic control builders */
+function mkRow(body, label){
+  const r = document.createElement('div'); r.className = 'row';
+  const l = document.createElement('label');
+  l.innerHTML = '<span>' + label + '</span><span class="val"></span>';
+  r.appendChild(l); body.appendChild(r);
+  return { row: r, val: l.querySelector('.val') };
+}
+function addRange(body, obj, key, label, min, max, step, fmt, opts){
+  const { row, val } = mkRow(body, label);
+  const i = document.createElement('input');
+  i.type = 'range'; i.min = min; i.max = max; i.step = step; i.value = obj[key];
+  row.appendChild(i);
+  const upd = () => { i.value = obj[key]; val.textContent = fmt ? fmt(obj[key]) : obj[key]; };
+  i.addEventListener('input', () => { obj[key] = parseFloat(i.value); upd(); (opts && opts.on || invalidate)(); });
+  upd(); REFRESH.push(upd);
+  if (opts && opts.showIf) REFRESH.push(() => { row.classList.toggle('hidden', !opts.showIf()); });
+  if (opts && opts.enableIf) REFRESH.push(() => {
+    const ok = opts.enableIf();
+    i.disabled = !ok; row.classList.toggle('off', !ok);
+  });
+  return row;
+}
+function addSelect(body, obj, key, label, options, opts){
+  const { row, val } = mkRow(body, label);
+  val.remove();
+  const s = document.createElement('select');
+  options.forEach(o => { const e = document.createElement('option'); e.value = o[0]; e.textContent = o[1]; s.appendChild(e); });
+  s.value = obj[key]; row.appendChild(s);
+  const upd = () => { s.value = obj[key]; };
+  s.addEventListener('change', () => { obj[key] = isNaN(s.value) || s.value === '' ? s.value : (opts && opts.num ? parseFloat(s.value) : s.value); (opts && opts.on || invalidate)(); refresh(); });
+  REFRESH.push(upd);
+  if (opts && opts.showIf) REFRESH.push(() => { row.classList.toggle('hidden', !opts.showIf()); });
+  return row;
+}
+function addToggle(body, obj, key, label, opts){
+  const b = document.createElement('button');
+  b.className = 'btn sm';
+  const upd = () => { b.textContent = label + ': ' + (obj[key] ? 'on' : 'off'); b.classList.toggle('primary', !!obj[key]); };
+  b.onclick = () => { obj[key] = !obj[key]; upd(); (opts && opts.on || invalidate)(); refresh(); };
+  upd(); REFRESH.push(upd); body.appendChild(b);
+  if (opts && opts.showIf) REFRESH.push(() => { b.classList.toggle('hidden', !opts.showIf()); });
+  return b;
+}
+function addColor(body, obj, key, label, opts){
+  const { row, val } = mkRow(body, label);
+  val.remove();
+  const w = document.createElement('div'); w.className = 'sw'; w.style.height = '28px';
+  const i = document.createElement('input'); i.type = 'color';
+  i.addEventListener('input', () => { obj[key] = i.value; w.style.background = i.value; (opts && opts.on || invalidate)(); });
+  w.appendChild(i); row.appendChild(w);
+  const upd = () => { i.value = obj[key]; w.style.background = obj[key]; };
+  upd(); REFRESH.push(upd);
+  if (opts && opts.showIf) REFRESH.push(() => { row.classList.toggle('hidden', !opts.showIf()); });
+  return row;
+}
+
+function group(root, title, build, closed){
+  const d = document.createElement('div');
+  d.className = 'grp' + (closed ? ' closed' : '');
+  const h = document.createElement('h3');
+  h.innerHTML = title + '<span class="chev">&#9662;</span>';
+  const body = document.createElement('div'); body.className = 'grpbody';
+  h.onclick = () => d.classList.toggle('closed');
+  d.appendChild(h); d.appendChild(body); root.appendChild(d);
+  build(body);
+  return d;
+}
+function refresh(){ REFRESH.forEach(f => f()); }
+
+/* ---- left panel ---- */
+const isMesh = () => P.style === 'mesh' || P.style === 'aurora';
+const hasBands = () => P.style === 'waves' || P.style === 'rings';
+const hasAngle = () => P.style === 'conic' || P.style === 'linear';
+
+/* Custom presets are complete look snapshots kept in browser storage.
+   Built in presets stay partial and resolve against DEFAULTS, so clicking one
+   gives the same result no matter what was on screen before it. */
+let CUSTOM = {};
+function loadCustom(){
+  try { CUSTOM = JSON.parse(localStorage.getItem('ggs.presets.v1') || '{}') || {}; }
+  catch(e){ CUSTOM = {}; }
+}
+function saveCustom(){
+  try { localStorage.setItem('ggs.presets.v1', JSON.stringify(CUSTOM)); }
+  catch(e){ toast('Could not save, browser storage is blocked or full'); }
+}
+function resolvePreset(pr){
+  const p = JSON.parse(JSON.stringify(DEFAULTS));
+  Object.keys(pr).forEach(k => { if (k !== 'pal') p[k] = pr[k]; });
+  if (pr.pal){ p.colors = PALETTES[pr.pal].slice(); p.colorCount = 5; }
+  p.bg = pr.bg || p.colors[0];
+  return p;
+}
+/* A real rendered thumbnail, because a colour strip says nothing about
+   whether a preset is a soft mesh or a halftone. */
+function presetThumb(params){
+  const b = buf('thumb', 150, 94);
+  drawFrame(b.x, 150, 94, 0.3, params, 3);
+  return b.c.toDataURL('image/png');
+}
+
+loadCustom();
+let rebuildPresets = () => {};
+
+const presetGroup = group($('#left'), 'Preset', body => {
+  const builtGrid = document.createElement('div'); builtGrid.className = 'presets';
+  const mineHead = document.createElement('div'); mineHead.className = 'subhead'; mineHead.textContent = 'Your presets';
+  const mineGrid = document.createElement('div'); mineGrid.className = 'presets';
+
+  function markActive(){
+    [].concat([].slice.call(builtGrid.children), [].slice.call(mineGrid.children))
+      .forEach(c => c.classList.toggle('on', c.dataset.name === activePreset));
+  }
+
+  function card(name, params, custom){
+    const c = document.createElement('div');
+    c.className = 'pcard'; c.dataset.name = name;
+    const pv = document.createElement('div'); pv.className = 'pv';
+    pv.style.backgroundImage = 'url(' + presetThumb(params) + ')';
+    const lab = document.createElement('span'); lab.textContent = name; lab.title = name;
+    c.appendChild(pv); c.appendChild(lab);
+    c.onclick = () => {
+      Object.assign(P, JSON.parse(JSON.stringify(params)));
+      invalidate();
+      activePreset = name;
+      refresh();
+    };
+    if (custom){
+      const del = document.createElement('button');
+      del.className = 'del'; del.textContent = '\u00D7'; del.title = 'Delete this preset';
+      del.onclick = e => {
+        e.stopPropagation();
+        if (!window.confirm('Delete the preset "' + name + '"?')) return;
+        delete CUSTOM[name];
+        if (activePreset === name) activePreset = null;
+        saveCustom(); rebuildPresets(); refresh();
+        toast('Deleted ' + name);
+      };
+      c.appendChild(del);
+    }
+    return c;
+  }
+
+  rebuildPresets = () => {
+    builtGrid.innerHTML = '';
+    Object.keys(PRESETS).forEach(n => builtGrid.appendChild(card(n, resolvePreset(PRESETS[n]), false)));
+    mineGrid.innerHTML = '';
+    const names = Object.keys(CUSTOM);
+    mineHead.classList.toggle('hidden', !names.length);
+    mineGrid.classList.toggle('hidden', !names.length);
+    names.forEach(n => mineGrid.appendChild(card(n, CUSTOM[n], true)));
+    markActive();
+  };
+  REFRESH.push(markActive);
+
+  body.appendChild(builtGrid);
+
+  const row = document.createElement('div'); row.className = 'btnrow';
+  const rnd = document.createElement('button'); rnd.className = 'btn sm'; rnd.textContent = 'New shape (R)';
+  rnd.onclick = () => { P.seed = 1 + Math.floor(Math.random() * 99999); invalidate(); refresh(); };
+  const wild = document.createElement('button'); wild.className = 'btn sm'; wild.textContent = 'Surprise me';
+  wild.onclick = () => randomiseAll();
+  row.appendChild(rnd); row.appendChild(wild); body.appendChild(row);
+
+  const sv = document.createElement('button'); sv.className = 'btn sm'; sv.textContent = 'Save this look';
+  sv.onclick = () => {
+    const n = (window.prompt('Name this preset', 'My look') || '').trim();
+    if (!n) return;
+    if (PRESETS[n]){ toast('A built in preset already uses that name'); return; }
+    if (CUSTOM[n] && !window.confirm('Replace your preset "' + n + '"?')) return;
+    CUSTOM[n] = JSON.parse(JSON.stringify(P));
+    saveCustom(); activePreset = n; rebuildPresets(); refresh();
+    toast('Saved "' + n + '"');
+  };
+  body.appendChild(sv);
+
+  body.appendChild(mineHead);
+  body.appendChild(mineGrid);
+  rebuildPresets();
+}, true);
+
+/* name the current look in the header, so the collapsed panel still says something */
+(() => {
+  const h = presetGroup.querySelector('h3');
+  const badge = document.createElement('span'); badge.className = 'gbadge';
+  h.insertBefore(badge, h.querySelector('.chev'));
+  REFRESH.push(() => { badge.textContent = activePreset || 'custom look'; });
+})();
+
+group($('#left'), 'Shape', body => {
+  addSelect(body, P, 'style', 'Style', STYLES);
+  addSelect(body, P, 'mix', 'Blend', [['screen','Screen'],['source-over','Normal'],['lighter','Add'],['overlay','Overlay'],['multiply','Multiply']], { showIf: () => P.style !== 'rings' });
+  addRange(body, P, 'blobs', 'Shapes', 2, 12, 1, null, { showIf: isMesh });
+  addRange(body, P, 'bands', 'Bands', 2, 14, 1, null, { showIf: hasBands });
+  addRange(body, P, 'angle', 'Angle', 0, 359, 1, v => v + '°', { showIf: hasAngle });
+  addRange(body, P, 'blobSize', 'Scale', 0.15, 1.6, 0.01, v => Math.round(v * 100));
+  addRange(body, P, 'spread', 'Travel', 0, 1.6, 0.01, v => Math.round(v * 100));
+  addRange(body, P, 'warp', 'Warp', 0, 1.2, 0.01, v => Math.round(v * 100), { showIf: () => P.style !== 'rings' });
+});
+
+group($('#left'), 'Colour', body => {
+  const pr = document.createElement('div'); pr.className = 'palrow';
+  Object.keys(PALETTES).forEach(name => {
+    const b = document.createElement('button');
+    b.className = 'palbtn'; b.title = name;
+    b.style.background = 'linear-gradient(90deg,' + PALETTES[name].join(',') + ')';
+    b.onclick = () => { P.colors = PALETTES[name].slice(); P.bg = P.colors[0]; invalidate(); refresh(); };
+    pr.appendChild(b);
+  });
+  body.appendChild(pr);
+
+  const sw = document.createElement('div'); sw.className = 'swatches';
+  const inputs = [];
+  for (let i = 0; i < 5; i++){
+    const d = document.createElement('div'); d.className = 'sw';
+    const inp = document.createElement('input'); inp.type = 'color';
+    inp.addEventListener('input', () => { P.colors[i] = inp.value; d.style.background = inp.value; invalidate(); });
+    d.appendChild(inp); sw.appendChild(d); inputs.push({ d, inp });
+  }
+  body.appendChild(sw);
+  REFRESH.push(() => {
+    inputs.forEach((o, i) => {
+      o.inp.value = P.colors[i] || '#000000';
+      o.d.style.background = P.colors[i] || '#000';
+      o.d.classList.toggle('hidden', i >= P.colorCount);
+    });
+  });
+  addRange(body, P, 'colorCount', 'Colours used', 2, 5, 1);
+
+  const { row, val } = mkRow(body, 'Background');
+  val.remove();
+  const bgWrap = document.createElement('div'); bgWrap.className = 'sw'; bgWrap.style.height = '28px';
+  const bgIn = document.createElement('input'); bgIn.type = 'color';
+  bgIn.addEventListener('input', () => { P.bg = bgIn.value; bgWrap.style.background = bgIn.value; invalidate(); });
+  bgWrap.appendChild(bgIn); row.appendChild(bgWrap);
+  REFRESH.push(() => { bgIn.value = P.bg; bgWrap.style.background = P.bg; });
+
+  const shuf = document.createElement('button'); shuf.className = 'btn sm'; shuf.textContent = 'Shuffle order';
+  shuf.onclick = () => {
+    const a = P.colors.slice();
+    for (let i = a.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)); const t = a[i]; a[i] = a[j]; a[j] = t; }
+    P.colors = a; invalidate(); refresh();
+  };
+  body.appendChild(shuf);
+});
+
+group($('#left'), 'Effect', body => {
+  addSelect(body, P, 'fx', 'Effect', FX_LIST);
+  const is = k => () => P.fx === k;
+
+  addRange(body, P, 'htCell', 'Dot spacing', 4, 70, 1, v => Math.round(v) + ' px', { showIf: is('halftone') });
+  addRange(body, P, 'htAspect', 'Row spacing', 0.2, 2.2, 0.02, v => Math.round(v * 100) + '%', { showIf: is('halftone') });
+  addRange(body, P, 'htMax', 'Dot size', 0.3, 2, 0.01, v => Math.round(v * 100), { showIf: is('halftone') });
+  addRange(body, P, 'htMin', 'Min dot', 0, 0.45, 0.01, v => Math.round(v * 100), { showIf: is('halftone') });
+  addRange(body, P, 'htGamma', 'Falloff', 0.3, 3, 0.05, v => v.toFixed(2), { showIf: is('halftone') });
+  addRange(body, P, 'htAngle', 'Grid angle', 0, 90, 1, v => v + '\u00B0', { showIf: is('halftone') });
+  addSelect(body, P, 'htShape', 'Dot shape', [['circle','Circle'],['square','Square'],['diamond','Diamond']], { showIf: is('halftone') });
+  addSelect(body, P, 'htMode', 'Colour', [['ink','Ink on paper'],['source','From gradient']], { showIf: is('halftone') });
+  addColor(body, P, 'htInk', 'Ink', { showIf: () => P.fx === 'halftone' && P.htMode === 'ink' });
+  addColor(body, P, 'htPaper', 'Paper', { showIf: is('halftone') });
+  addToggle(body, P, 'htInvert', 'Invert', { showIf: is('halftone') });
+
+  addRange(body, P, 'dgCell', 'Disc size', 14, 180, 1, v => Math.round(v) + ' px', { showIf: is('dotglass') });
+  addRange(body, P, 'dgOverlap', 'Overlap', -0.25, 0.3, 0.01, v => Math.round(v * 100), { showIf: is('dotglass') });
+  addRange(body, P, 'dgDepth', 'Depth', 0, 0.9, 0.01, v => Math.round(v * 100), { showIf: is('dotglass') });
+  addRange(body, P, 'dgLight', 'Light angle', 0, 359, 1, v => v + '\u00B0', { showIf: is('dotglass') });
+  addRange(body, P, 'dgRim', 'Rim light', 0, 0.8, 0.01, v => Math.round(v * 100), { showIf: is('dotglass') });
+
+  addRange(body, P, 'flCount', 'Slats', 3, 70, 1, null, { showIf: is('fluted') });
+  addRange(body, P, 'flRefract', 'Refraction', 1, 4, 0.05, v => v.toFixed(2) + 'x', { showIf: is('fluted') });
+  addRange(body, P, 'flAngle', 'Slat angle', 0, 180, 1, v => v + '\u00B0', { showIf: is('fluted') });
+  addRange(body, P, 'flEdge', 'Edge light', 0, 0.8, 0.01, v => Math.round(v * 100), { showIf: is('fluted') });
+  addRange(body, P, 'flCover', 'Coverage', 0.1, 1, 0.01, v => Math.round(v * 100) + '%', { showIf: is('fluted') });
+  addToggle(body, P, 'flDrift', 'Slide slats', { showIf: is('fluted') });
+
+  addRange(body, P, 'pnCount', 'Panes', 2, 14, 1, null, { showIf: is('panes') });
+  addSelect(body, P, 'pnShape', 'Pane shape', [['rrect','Rounded rect'],['circle','Circle'],['arc','Ring band']], { showIf: is('panes') });
+  addRange(body, P, 'pnScale', 'Inner size', 0.1, 0.95, 0.01, v => Math.round(v * 100), { showIf: is('panes') });
+  addRange(body, P, 'pnOffX', 'Offset across', -0.3, 0.3, 0.01, v => Math.round(v * 100), { showIf: is('panes') });
+  addRange(body, P, 'pnOffY', 'Offset down', -0.3, 0.3, 0.01, v => Math.round(v * 100), { showIf: is('panes') });
+  addRange(body, P, 'pnRadius', 'Corner', 0, 0.5, 0.01, v => Math.round(v * 100), { showIf: is('panes') });
+  addRange(body, P, 'pnAlpha', 'Opacity', 0.05, 1, 0.01, v => Math.round(v * 100), { showIf: is('panes') });
+  addRange(body, P, 'pnGlow', 'Edge glow', 0, 1, 0.01, v => Math.round(v * 100), { showIf: is('panes') });
+  addRange(body, P, 'pnRot', 'Rotation', -45, 45, 1, v => v + '\u00B0', { showIf: is('panes') });
+  addToggle(body, P, 'pnSpin', 'Spin over loop', { showIf: is('panes') });
+
+  const n = document.createElement('div'); n.className = 'note';
+  n.innerHTML = 'Effects read the gradient underneath, so the palette still drives the colour. Weight, measured on the same 400px loop: <b>halftone roughly halves it</b>, panes cut about a fifth, while <b>dot glass adds about a third</b> and fluted glass a sixth, because both add detail rather than flatten it.';
+  body.appendChild(n);
+});
+
+group($('#left'), 'Finish', body => {
+  addRange(body, P, 'softness', 'Softness', 0, 1, 0.01, v => Math.round(v * 100));
+  addRange(body, P, 'blur', 'Blur', 0, 100, 1);
+  addRange(body, P, 'saturation', 'Saturation', 0, 2.5, 0.01, v => v.toFixed(2));
+  addRange(body, P, 'contrast', 'Contrast', 0.4, 2, 0.01, v => v.toFixed(2));
+  addRange(body, P, 'brightness', 'Brightness', 0.4, 1.8, 0.01, v => v.toFixed(2));
+  addRange(body, P, 'vignette', 'Vignette', 0, 0.9, 0.01, v => Math.round(v * 100));
+  addRange(body, P, 'posterize', 'Posterise', 0, 16, 1, v => v < 2 ? 'off' : v + ' steps');
+  addRange(body, P, 'grain', 'Grain', 0, 0.6, 0.01, v => Math.round(v * 166));
+  addRange(body, P, 'grainSize', 'Grain size', 1, 6, 0.1, v => v.toFixed(1));
+  addToggle(body, P, 'grainAnim', 'Animate grain');
+  const n = document.createElement('div'); n.className = 'note';
+  n.innerHTML = 'Measured at grain 30: static adds about <b>7 per cent</b> to the file, animating it adds about <b>17 per cent</b>. Posterise goes the other way and cuts the file hard.';
+  body.appendChild(n);
+}, true);
+
+/* ---- right panel: export ---- */
+let sizeSel, wIn, hIn;
+group($('#right'), 'Canvas size', body => {
+  const { row } = mkRow(body, 'Preset');
+  const s = document.createElement('select');
+  SIZE_PRESETS.forEach((p, i) => { const o = document.createElement('option'); o.value = i; o.textContent = p[0]; s.appendChild(o); });
+  const cu = document.createElement('option'); cu.value = 'c'; cu.textContent = 'Custom'; s.appendChild(cu);
+  s.onchange = () => {
+    if (s.value === 'c') return;
+    const p = SIZE_PRESETS[+s.value];
+    X.w = p[1]; X.h = p[2]; sizePreview(); markStale(); refresh(); save();
+  };
+  row.appendChild(s); sizeSel = s;
+
+  const two = document.createElement('div'); two.className = 'two';
+  const mk = (lab, key) => {
+    const w = document.createElement('div'); w.className = 'row';
+    w.innerHTML = '<label><span>' + lab + '</span></label>';
+    const i = document.createElement('input'); i.type = 'number'; i.min = 32; i.max = 4000; i.step = 2;
+    i.addEventListener('change', () => {
+      X[key] = clamp(Math.round(parseInt(i.value, 10) || 32), 32, 4000);
+      i.value = X[key]; s.value = 'c'; sizePreview(); markStale(); save();
+    });
+    w.appendChild(i); two.appendChild(w);
+    return i;
+  };
+  wIn = mk('Width', 'w'); hIn = mk('Height', 'h');
+  body.appendChild(two);
+  REFRESH.push(() => {
+    wIn.value = X.w; hIn.value = X.h;
+    const i = SIZE_PRESETS.findIndex(p => p[1] === X.w && p[2] === X.h);
+    sizeSel.value = i >= 0 ? String(i) : 'c';
+  });
+});
+
+group($('#right'), 'Timing', body => {
+  addSelect(body, X, 'fps', 'Frame rate', [['25','25 fps'],['20','20 fps'],['16','16 fps'],['12.5','12.5 fps'],['10','10 fps'],['8','8 fps'],['6.25','6.25 fps'],['5','5 fps']], { num: true, on: markStale });
+  addRange(body, X, 'dur', 'Loop length', 0.6, 8, 0.1, v => v.toFixed(1) + ' s', { on: markStale });
+  addRange(body, P, 'speed', 'Motion speed', 1, 8, 1, v => v + 'x', { on: () => { markStale(); save(); } });
+  addSelect(body, X, 'loop', 'Repeat', [['0','Forever'],['1','Once'],['3','3 times']], { num: true, on: markStale });
+  const d = document.createElement('div'); d.className = 'mini';
+  REFRESH.push(() => { d.textContent = frameCount(X) + ' frames, plays at ' + (+realFps(X).toFixed(2)) + ' fps'; });
+  body.appendChild(d);
+});
+
+group($('#right'), 'Crop', body => {
+  const sync = from => {
+    if (X.linkZoom){ if (from === 'x') X.zoomY = X.zoomX; else X.zoomX = X.zoomY; }
+    markStale(); refresh(); save();
+  };
+  addRange(body, X, 'zoomX', 'Zoom X', 1, 4, 0.01, v => v.toFixed(2) + 'x', { on: () => sync('x') });
+  addRange(body, X, 'zoomY', 'Zoom Y', 1, 4, 0.01, v => v.toFixed(2) + 'x', { on: () => sync('y') });
+  addToggle(body, X, 'linkZoom', 'Link X and Y', {
+    on: () => { if (X.linkZoom) X.zoomY = X.zoomX; markStale(); refresh(); save(); }
+  });
+  addRange(body, X, 'panX', 'Position X', 0, 1, 0.005, v => Math.round(v * 100), { on: markStale, enableIf: () => cropZoom(X).zx > 1.001 });
+  addRange(body, X, 'panY', 'Position Y', 0, 1, 0.005, v => Math.round(v * 100), { on: markStale, enableIf: () => cropZoom(X).zy > 1.001 });
+
+  const btn = document.createElement('button'); btn.className = 'btn sm'; btn.textContent = 'Reset crop';
+  btn.onclick = () => { X.zoomX = 1; X.zoomY = 1; X.panX = 0.5; X.panY = 0.5; markStale(); refresh(); save(); };
+  body.appendChild(btn);
+
+  const d = document.createElement('div'); d.className = 'mini';
+  REFRESH.push(() => {
+    const v = virtualSize(X);
+    const cap = (v.zx < (X.zoomX || 1) - 0.01) || (v.zy < (X.zoomY || 1) - 0.01);
+    d.textContent = (v.zx <= 1.001 && v.zy <= 1.001) ? 'Full frame, no crop'
+      : 'Renders ' + v.w + ' x ' + v.h + ', exports ' + X.w + ' x ' + X.h
+        + (cap ? '. Capped at ' + v.zx.toFixed(2) + ' by ' + v.zy.toFixed(2) + ' by the canvas limit' : '');
+  });
+  body.appendChild(d);
+
+  const n = document.createElement('div'); n.className = 'note';
+  n.innerHTML = 'Zoom cuts a window out of a larger render, so the crop keeps full export resolution and everything inside it scales up. <b>Drag the preview to move the window.</b> Position only bites on an axis you have zoomed. Unlink the axes to stretch the composition on one axis before cutting. Cropping also cut the file in testing: a 400px loop went 472 to 191 KB from 1x to 3.5x.';
+  body.appendChild(n);
+});
+
+group($('#right'), 'Weight', body => {
+  addRange(body, X, 'maxColors', 'Colours', 4, 256, 1, v => v + '', { on: markStale });
+  addSelect(body, X, 'dither', 'Dither', [['blue','Blue noise, smoothest'],['ordered','Grid, a little lighter'],['none','None, bands on gradients'],['fs','Diffusion, heaviest files']], { on: markStale });
+  addRange(body, X, 'ditherAmt', 'Dither strength', 0, 1.5, 0.05, v => Math.round(v * 100) + '%', { on: markStale, showIf: () => X.dither === 'blue' || X.dither === 'ordered' });
+  addToggle(body, X, 'deltaOn', 'Frame delta', { on: markStale });
+  addRange(body, X, 'deltaThresh', 'Delta tolerance', 0, 24, 1, v => v === 0 ? 'lossless' : String(v), { on: markStale, showIf: () => X.deltaOn });
+  const n = document.createElement('div'); n.className = 'note';
+  n.innerHTML = 'Every frame costs roughly the same, so <b>frame count is the biggest lever</b>. <b>Blue noise</b> hides the palette as fine grain with no pattern; the grid option prints a regular crosshatch and runs about 5 to 10 per cent lighter. Lower the dither strength if the grain shows, raise it if you see bands. <b>Keep delta tolerance under 8</b>: above that, stale pixels smear into blotches and trails that get worse toward the end of the loop.';
+  body.appendChild(n);
+});
+
+let sizeEl, barEl, statFrames, statPx, statCol, statMotion, measureBtn, targetIn;
+group($('#right'), 'File size', body => {
+  const st = document.createElement('div'); st.className = 'stat';
+  sizeEl = document.createElement('div'); sizeEl.className = 'size idle'; sizeEl.textContent = '--';
+  const bar = document.createElement('div'); bar.className = 'bar'; barEl = document.createElement('i'); bar.appendChild(barEl);
+  st.appendChild(sizeEl); st.appendChild(bar);
+  const line = (lab) => { const d = document.createElement('div'); d.className = 'statline'; d.innerHTML = '<span>' + lab + '</span><b></b>'; st.appendChild(d); return d.querySelector('b'); };
+  statPx = line('Dimensions'); statFrames = line('Frames'); statCol = line('Colours'); statMotion = line('Motion');
+  body.appendChild(st);
+
+  const { row } = mkRow(body, 'Target size');
+  const two = document.createElement('div'); two.className = 'two';
+  targetIn = document.createElement('input'); targetIn.type = 'number'; targetIn.min = 20; targetIn.max = 60000; targetIn.step = 50;
+  targetIn.addEventListener('change', () => { X.targetKB = clamp(parseInt(targetIn.value, 10) || 500, 20, 60000); targetIn.value = X.targetKB; paintSize(); save(); });
+  const unit = document.createElement('div'); unit.className = 'btn sm ghost'; unit.style.pointerEvents = 'none'; unit.textContent = 'KB';
+  two.appendChild(targetIn); two.appendChild(unit); row.appendChild(two);
+  REFRESH.push(() => { targetIn.value = X.targetKB; });
+
+  const chips = document.createElement('div'); chips.className = 'chips';
+  [['250 KB',250],['500 KB',500],['1 MB',1024],['2 MB',2048],['5 MB',5120]].forEach(c => {
+    const b = document.createElement('div'); b.className = 'chip'; b.textContent = c[0];
+    b.onclick = () => { X.targetKB = c[1]; refresh(); paintSize(); save(); };
+    chips.appendChild(b);
+  });
+  body.appendChild(chips);
+
+  const r2 = document.createElement('div'); r2.className = 'btnrow';
+  measureBtn = document.createElement('button'); measureBtn.className = 'btn sm'; measureBtn.textContent = 'Measure exact';
+  measureBtn.onclick = () => doMeasure();
+  const fitBtn = document.createElement('button'); fitBtn.className = 'btn sm'; fitBtn.textContent = 'Fit to target';
+  fitBtn.onclick = () => doFit();
+  r2.appendChild(measureBtn); r2.appendChild(fitBtn); body.appendChild(r2);
+});
+
+group($('#right'), 'Export', body => {
+  const local = document.createElement('div'); local.className = 'stat hidden'; local.id = 'localBox';
+  const lb = document.createElement('button'); lb.className = 'btn primary'; lb.id = 'localBtn';
+  lb.onclick = () => doExportLocal();
+  const ls = document.createElement('div'); ls.className = 'mini'; ls.id = 'localStatus';
+  local.appendChild(lb); local.appendChild(ls);
+  body.appendChild(local);
+  addRange(body, X, 'localQuality', 'Max quality', 25, 100, 1, v => String(v), { on: () => save(), showIf: () => !!localEngineName() });
+  REFRESH.push(() => {
+    const e = localEngineName();
+    local.classList.toggle('hidden', !e);
+    if (!e) return;
+    lb.textContent = 'Export best GIF (' + e + ')';
+    const last = LAST_LOCAL ? ' Last one: ' + fmtBytes(LAST_LOCAL.bytes) + ' at quality ' + LAST_LOCAL.quality + (LAST_LOCAL.fits ? '.' : ', over target.') : '';
+    ls.textContent = (e === 'gifski'
+      ? 'One click: encodes with gifski on this Mac, nothing uploaded.'
+      : 'One click: encodes with Pillow on this Mac, one palette per frame. gifski would make lighter files.')
+      + ' Uses the highest quality that fits your target size.' + last;
+  });
+  const gif = document.createElement('button'); gif.className = 'btn'; gif.textContent = 'Export GIF (built in)';
+  gif.onclick = () => doExportGIF();
+  body.appendChild(gif);
+  const r = document.createElement('div'); r.className = 'btnrow';
+  const png = document.createElement('button'); png.className = 'btn sm'; png.textContent = 'PNG still';
+  png.onclick = () => exportPNG();
+  const webm = document.createElement('button'); webm.className = 'btn sm'; webm.textContent = 'WebM video';
+  webm.onclick = () => doExportWEBM();
+  r.appendChild(png); r.appendChild(webm); body.appendChild(r);
+  const fr = document.createElement('button'); fr.className = 'btn sm'; fr.textContent = 'PNG frames for GIF tools (zip)';
+  fr.onclick = () => doExportFrames();
+  body.appendChild(fr);
+  const nf = document.createElement('div'); nf.className = 'note';
+  nf.innerHTML = 'Every frame as a lossless PNG, with a README giving the exact commands. For the best GIF, run them through <b>gifski</b> (free, on your Mac): it builds a palette per frame and dithers across time, which beats a single shared palette. ezgif.com works in the browser but uploads the frames.';
+  body.appendChild(nf);
+  const n = document.createElement('div'); n.className = 'note';
+  n.innerHTML = 'Preview lists the frames of a GIF as pages instead of playing it. To watch the loop, select the file in Finder and press <b>Space</b> for Quick Look, or open it in a browser, Figma or Slack.';
+  body.appendChild(n);
+  const n2 = document.createElement('div'); n2.className = 'note';
+  n2.innerHTML = 'WebM keeps full colour with no dither and no banding, and ran <b>10 to 30 times lighter</b> than the same loop as a GIF in testing. Use it wherever video is allowed, and keep GIF for email, Slack and docs.';
+  body.appendChild(n2);
+  const r3 = document.createElement('div'); r3.className = 'btnrow';
+  const cp = document.createElement('button'); cp.className = 'btn sm ghost'; cp.textContent = 'Copy settings';
+  cp.onclick = async () => {
+    const txt = JSON.stringify({ P, X });
+    try { await navigator.clipboard.writeText(txt); toast('Settings copied'); }
+    catch(e){ window.prompt('Copy this:', txt); }
+  };
+  const ps = document.createElement('button'); ps.className = 'btn sm ghost'; ps.textContent = 'Paste settings';
+  ps.onclick = () => {
+    const t = window.prompt('Paste settings JSON');
+    if (!t) return;
+    try {
+      const o = JSON.parse(t);
+      if (o.P) Object.assign(P, o.P);
+      if (o.X) Object.assign(X, o.X);
+      sizePreview(); invalidate(); refresh(); toast('Settings applied');
+    } catch(e){ toast('That was not valid settings JSON'); }
+  };
+  r3.appendChild(cp); r3.appendChild(ps); body.appendChild(r3);
+});
+
+/* ---- estimate display ---- */
+let motionTimer = 0;
+function paintMotion(){
+  clearTimeout(motionTimer);
+  motionTimer = setTimeout(() => {
+    if (!statMotion) return;
+    const m = measureMotion();
+    statMotion.textContent = (m * 100).toFixed(m < 0.1 ? 1 : 0) + '%' + (m < STILL ? ', looks still' : m < 0.06 ? ', subtle' : '');
+    statMotion.style.color = m < STILL ? 'var(--bad)' : m < 0.06 ? 'var(--warn)' : '';
+  }, 250);
+}
+function paintSize(){
+  paintMotion();
+  const target = X.targetKB * 1024;
+  statPx.textContent = X.w + ' x ' + X.h;
+  statFrames.textContent = frameCount(X) + ' @ ' + (+realFps(X).toFixed(2)) + ' fps';
+  statCol.textContent = X.maxColors + (X.dither === 'none' ? '' : ', ' + (X.dither === 'fs' ? 'F-S' : 'ordered'));
+  if (fileBytes == null || sizeStale){
+    const rough = roughBytes(X);
+    const r = rough / target;
+    sizeEl.className = 'size ' + (r <= 1 ? 'good' : r <= 1.35 ? 'warn' : 'bad');
+    sizeEl.textContent = '~' + fmtBytes(rough);
+    sizeEl.title = 'Rough figure. Press Measure exact for the real byte count.';
+    barEl.style.width = clamp(r * 100, 2, 100) + '%';
+    return;
+  }
+  sizeEl.title = 'Exact byte count from a real encode.';
+  sizeEl.textContent = fmtBytes(fileBytes);
+  const ratio = fileBytes / target;
+  sizeEl.className = 'size ' + (ratio <= 1 ? 'good' : ratio <= 1.35 ? 'warn' : 'bad');
+  barEl.style.width = clamp(ratio * 100, 2, 100) + '%';
+}
+
+function showOverlay(title){
+  $('#ovTitle').textContent = title;
+  $('#ovBar').style.width = '0%';
+  $('#ovLbl').textContent = 'Starting';
+  $('#overlay').classList.add('show');
+  token = { cancel: false };
+}
+function prog(p, label){
+  $('#ovBar').style.width = clamp(p * 100, 0, 100) + '%';
+  if (label) $('#ovLbl').textContent = label;
+}
+function hideOverlay(){ $('#overlay').classList.remove('show'); }
+function askOverlay(title, msg, buttons){
+  return new Promise(res => {
+    const ov = $('#overlay'), bar = $('#ovBar').parentElement, cancel = $('#ovCancel');
+    $('#ovTitle').textContent = title;
+    $('#ovLbl').textContent = msg;
+    bar.style.display = 'none'; cancel.style.display = 'none';
+    const row = document.createElement('div'); row.className = 'btnrow';
+    buttons.forEach(([label, val], i) => {
+      const b = document.createElement('button');
+      b.className = 'btn sm' + (i === 0 ? ' primary' : '');
+      b.textContent = label;
+      b.onclick = () => { row.remove(); bar.style.display = ''; cancel.style.display = ''; ov.classList.remove('show'); res(val); };
+      row.appendChild(b);
+    });
+    $('.ovbox').appendChild(row);
+    ov.classList.add('show');
+  });
+}
+$('#ovCancel').onclick = () => { token.cancel = true; hideOverlay(); toast('Cancelled'); };
+
+async function guarded(fn){
+  try { return await fn(); }
+  catch(e){ hideOverlay(); console.error(e); toast('Export failed: ' + (e && e.message || e)); return null; }
+}
+async function doMeasure(){ return guarded(doMeasureInner); }
+async function doMeasureInner(){
+  showOverlay('Measuring exact size');
+  const r = await measureGIF(Object.assign({}, X), snapshotParams(), prog, token);
+  hideOverlay();
+  if (!r) return;
+  fileBytes = r.length; sizeStale = false; paintSize();
+  toast('Exactly ' + fmtBytes(r.length) + '. Export is instant now.');
+}
+
+async function doFit(){ return guarded(doFitInner); }
+async function doFitInner(){
+  showOverlay('Fitting to ' + X.targetKB + ' KB');
+  const res = await fitToTarget(Object.assign({}, X), snapshotParams(), X.targetKB * 1024, prog, token);
+  hideOverlay();
+  if (!res) return;
+  Object.assign(X, res.cfg);
+  fileBytes = res.bytes.length; sizeStale = false;
+  sizePreview(); refresh(); paintSize(); save();
+  if (fileBytes <= X.targetKB * 1024) toast('Fitted to ' + fmtBytes(fileBytes) + ' at ' + X.w + 'x' + X.h + ', ' + X.maxColors + ' colours. Export is instant now.');
+  else toast('Closest reachable is ' + fmtBytes(fileBytes) + '. Shorten the loop or turn off animated grain.');
+}
+
+async function doExportGIF(skipGuard){ return guarded(() => doExportGIFInner(skipGuard)); }
+/* Share of the picture that changes across the loop, from four small renders.
+   Grain is switched off for the test, since animated grain would read as motion. */
+function measureMotion(){
+  const W = 120, H = Math.max(24, Math.round(120 * X.h / X.w));
+  const b = buf('motion', W, H, true), c = cropOf(X), n = frameCount(X);
+  const p = Object.assign({}, P, { grain: 0 });
+  renderOut(b.x, W, H, 0, p, 0, c);
+  const a = new Uint8ClampedArray(b.x.getImageData(0, 0, W, H).data);
+  let most = 0;
+  for (const t of [0.25, 0.5, 0.75]){
+    renderOut(b.x, W, H, t, p, Math.round(t * n), c);
+    const d = b.x.getImageData(0, 0, W, H).data;
+    let k = 0;
+    for (let i = 0; i < d.length; i += 4) if (Math.abs(d[i] - a[i]) + Math.abs(d[i + 1] - a[i + 1]) + Math.abs(d[i + 2] - a[i + 2]) > 24) k++;
+    most = Math.max(most, k / (W * H));
+  }
+  return most;
+}
+const STILL = 0.015;
+
+async function doExportGIFInner(skipGuard){
+  const motion = measureMotion();
+  if (!skipGuard && motion < STILL){
+    const pick = await askOverlay('This loop barely moves',
+      'Only ' + (motion * 100).toFixed(1) + '% of the picture changes over the loop, so the GIF will look like a still image. Raise Travel, Warp or Motion speed, or try another style.',
+      [['Cancel', 'cancel'], ['Export anyway', 'go']]);
+    if (pick !== 'go') return;
+  }
+  showOverlay('Encoding GIF');
+  const t0 = performance.now();
+  const bytes = await measureGIF(Object.assign({}, X), snapshotParams(), prog, token);
+  hideOverlay();
+  if (!bytes) return;
+  fileBytes = bytes.length; sizeStale = false; paintSize();
+  const target = X.targetKB * 1024;
+  if (!skipGuard && bytes.length > target * 1.15){
+    const pick = await askOverlay(
+      fmtBytes(bytes.length) + ', over your ' + fmtBytes(target) + ' target',
+      'Fewer frames, fewer colours or a smaller canvas will bring it down.',
+      [['Fit to target', 'fit'], ['Save anyway', 'save'], ['Cancel', 'cancel']]);
+    if (pick === 'cancel') return;
+    if (pick === 'fit'){ await doFit(); return doExportGIF(true); }
+  }
+  download(new Blob([bytes], { type: 'image/gif' }), fileName('gif'));
+  toast('GIF saved, ' + fmtBytes(bytes.length) + ' in ' + ((performance.now() - t0) / 1000).toFixed(1) + 's');
+}
+
+async function doExportWEBM(){
+  if (typeof MediaRecorder === 'undefined'){ toast('This browser cannot record WebM'); return; }
+  showOverlay('Recording WebM');
+  try { await exportWEBM(prog, token); } catch(e){ toast('WebM failed: ' + e.message); }
+  hideOverlay();
+}
+
+/* ---- preview ---- */
+function sizePreview(){
+  const wrap = $('.canvaswrap');
+  const availW = Math.max(80, wrap.clientWidth - 48);
+  const availH = Math.max(80, wrap.clientHeight - 48);
+  const ar = X.w / X.h;
+  let cw = availW, ch = cw / ar;
+  if (ch > availH){ ch = availH; cw = ch * ar; }
+  cv.style.width = cw + 'px'; cv.style.height = ch + 'px';
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  PW = clamp(Math.round(cw * dpr), 48, 1000);
+  PH = Math.max(24, Math.round(PW / ar));
+  cv.width = PW; cv.height = PH;
+}
+
+/* GIF view: renders at export size, runs it through the same palette and
+   dither as the export, and shows those pixels, so grain, banding and colour
+   loss are visible before a file is ever made. Frame delta is not simulated;
+   at tolerances under 8 it changes nothing visible. */
+let gifView = false;
+const GV = { key: '', pending: '', q: null, idx: null, building: false, timer: 0 };
+let ENCODING = 0;
+function ensureGifPalette(){
+  const key = cfgKey(X, P);
+  if (GV.key === key || GV.building || ENCODING) return;
+  /* This runs every animation frame. Restarting the timer each time meant it
+     never fired, so only reschedule when the settings actually changed. While a
+     slider is being dragged the key keeps changing, which is the debounce. */
+  if (GV.pending === key) return;
+  clearTimeout(GV.timer);
+  GV.pending = key;
+  GV.timer = setTimeout(async () => {
+    GV.pending = '';
+    if (ENCODING) return;
+    GV.building = true;
+    try {
+      const reserve = X.deltaOn ? 1 : 0;
+      const pal = await buildPalette(Object.assign({}, X), snapshotParams(), Math.min(256 - reserve, X.maxColors));
+      GV.q = new Quant(pal); GV.key = key;
+    } catch(e){ console.error(e); }
+    finally { GV.building = false; }
+  }, 180);
+}
+function drawGifView(t, fi){
+  ensureGifPalette();
+  if (!GV.q || ENCODING){ renderOut(pctx, PW, PH, t, P, fi, cropOf(X)); return; }
+  const b = buf('gv', X.w, X.h, true);
+  renderOut(b.x, X.w, X.h, t, P, fi, cropOf(X));
+  const img = b.x.getImageData(0, 0, X.w, X.h), d = img.data;
+  if (!GV.idx || GV.idx.length !== X.w * X.h) GV.idx = new Uint8Array(X.w * X.h);
+  quantize(d, GV.idx, X.w, X.h, GV.q, X.dither, X.ditherAmt);
+  const q = GV.q, idx = GV.idx;
+  for (let i = 0, o = 0; i < idx.length; i++, o += 4){ const k = idx[i]; d[o] = q.R[k]; d[o + 1] = q.G[k]; d[o + 2] = q.B[k]; d[o + 3] = 255; }
+  b.x.putImageData(img, 0, 0);
+  pctx.setTransform(1, 0, 0, 1, 0, 0);
+  pctx.globalAlpha = 1; pctx.globalCompositeOperation = 'source-over';
+  pctx.imageSmoothingEnabled = true; pctx.imageSmoothingQuality = 'high';
+  pctx.clearRect(0, 0, PW, PH);
+  pctx.drawImage(b.c, 0, 0, PW, PH);
+}
+$('#gifViewBtn').onclick = () => {
+  gifView = !gifView;
+  $('#gifViewBtn').classList.toggle('primary', gifView);
+  if (gifView) toast('GIF view: showing the exact colours and dither of the export');
+};
+
+function tick(now){
+  const dt = lastT ? now - lastT : 16;
+  lastT = now;
+  if (playing) previewT = (previewT + dt / (X.dur * 1000)) % 1;
+  const n = frameCount(X);
+  const fi = clamp(Math.floor(previewT * n), 0, n - 1);
+  if (gifView) drawGifView(fi / n, fi);
+  else renderOut(pctx, PW, PH, fi / n, P, fi, cropOf(X));
+  $('#tmeta').textContent = 'frame ' + (fi + 1) + ' / ' + n;
+  const sc = $('#scrub');
+  if (document.activeElement !== sc) sc.value = Math.round(previewT * 100);
+  requestAnimationFrame(tick);
+}
+
+/* drag the preview to move the crop window */
+(() => {
+  let dragging = false, lx = 0, ly = 0;
+  const canPan = () => { const z = cropZoom(X); return z.zx > 1.001 || z.zy > 1.001; };
+  const setCursor = () => { cv.style.cursor = canPan() ? (dragging ? 'grabbing' : 'grab') : 'default'; };
+  REFRESH.push(setCursor);
+  cv.addEventListener('pointerdown', e => {
+    if (!canPan()) return;
+    dragging = true; lx = e.clientX; ly = e.clientY;
+    cv.setPointerCapture(e.pointerId); setCursor(); e.preventDefault();
+  });
+  cv.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const r = cv.getBoundingClientRect();
+    const z = cropZoom(X);
+    /* one screen width of drag should move a full screen width of composition,
+       which is r.width * (zoom - 1) of travel in crop terms */
+    const spanX = r.width * (z.zx - 1), spanY = r.height * (z.zy - 1);
+    if (spanX > 0) X.panX = clamp(X.panX - (e.clientX - lx) / spanX, 0, 1);
+    if (spanY > 0) X.panY = clamp(X.panY - (e.clientY - ly) / spanY, 0, 1);
+    lx = e.clientX; ly = e.clientY;
+    markStale(); refresh();
+  });
+  const end = e => {
+    if (!dragging) return;
+    dragging = false;
+    try { cv.releasePointerCapture(e.pointerId); } catch(err){}
+    setCursor(); save();
+  };
+  cv.addEventListener('pointerup', end);
+  cv.addEventListener('pointercancel', end);
+  setCursor();
+})();
+
+$('#playBtn').onclick = () => togglePlay();
+function togglePlay(){
+  playing = !playing;
+  $('#playIcon').innerHTML = playing ? '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>' : '<path d="M8 5l12 7-12 7z"/>';
+}
+$('#scrub').addEventListener('input', e => {
+  if (playing) togglePlay();
+  previewT = (+e.target.value) / 100;
+});
+
+function randomiseAll(){
+  const names = Object.keys(PALETTES);
+  const pn = names[Math.floor(Math.random() * names.length)];
+  P.colors = PALETTES[pn].slice();
+  P.bg = P.colors[Math.random() < 0.7 ? 0 : 4];
+  P.style = STYLES[Math.floor(Math.random() * STYLES.length)][0];
+  P.mix = ['screen','source-over','lighter','overlay'][Math.floor(Math.random() * 4)];
+  P.seed = 1 + Math.floor(Math.random() * 99999);
+  P.blobs = 3 + Math.floor(Math.random() * 6);
+  P.bands = 3 + Math.floor(Math.random() * 7);
+  P.angle = Math.floor(Math.random() * 360);
+  P.blobSize = 0.35 + Math.random() * 0.7;
+  P.spread = 0.3 + Math.random() * 0.8;
+  P.warp = Math.random() * 0.7;
+  P.softness = 0.4 + Math.random() * 0.4;
+  P.blur = 8 + Math.random() * 34;
+  P.saturation = 0.8 + Math.random() * 0.7;
+  P.vignette = Math.random() * 0.45;
+  P.posterize = Math.random() < 0.22 ? 3 + Math.floor(Math.random() * 6) : 0;
+  P.grain = Math.random() * 0.22;
+  const roll = Math.random();
+  P.fx = roll < 0.55 ? 'none' : roll < 0.7 ? 'halftone' : roll < 0.82 ? 'dotglass' : roll < 0.92 ? 'fluted' : 'panes';
+  if (P.fx === 'halftone'){
+    P.htCell = 8 + Math.random() * 26; P.htAspect = 0.35 + Math.random() * 1.2;
+    P.htMax = 0.9 + Math.random() * 0.5; P.htMin = Math.random() < 0.5 ? 0 : Math.random() * 0.2; P.htAngle = Math.random() < 0.6 ? 0 : Math.floor(Math.random() * 90);
+    P.htMode = Math.random() < 0.5 ? 'ink' : 'source';
+    P.htInk = P.colors[4]; P.htPaper = P.colors[0]; P.htInvert = P.htMode === 'source';
+  } else if (P.fx === 'dotglass'){
+    P.dgCell = 30 + Math.random() * 90; P.dgDepth = 0.25 + Math.random() * 0.5;
+    P.dgLight = Math.floor(Math.random() * 360); P.dgOverlap = -0.05 + Math.random() * 0.2;
+  } else if (P.fx === 'fluted'){
+    P.flCount = 8 + Math.floor(Math.random() * 40); P.flRefract = 1.3 + Math.random() * 2;
+    P.flAngle = Math.random() < 0.7 ? 0 : Math.floor(Math.random() * 180); P.flEdge = Math.random() * 0.6;
+    P.flCover = Math.random() < 0.5 ? 1 : 0.35 + Math.random() * 0.5;
+  } else if (P.fx === 'panes'){
+    P.pnCount = 3 + Math.floor(Math.random() * 8);
+    P.pnShape = ['rrect','circle','arc'][Math.floor(Math.random() * 3)];
+    P.pnScale = 0.2 + Math.random() * 0.6; P.pnOffX = -0.2 + Math.random() * 0.4;
+    P.pnOffY = -0.2 + Math.random() * 0.4; P.pnAlpha = 0.25 + Math.random() * 0.5;
+    P.pnGlow = Math.random(); P.pnRot = -30 + Math.random() * 60;
+  }
+  invalidate(); refresh();
+}
+
+document.addEventListener('keydown', e => {
+  if (/input|select|textarea/i.test(e.target.tagName)) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.code === 'Space'){ e.preventDefault(); togglePlay(); }
+  else if (e.key === 'r' || e.key === 'R'){
+    if (e.shiftKey) randomiseAll();
+    else { P.seed = 1 + Math.floor(Math.random() * 99999); invalidate(); refresh(); }
+  }
+  else if (e.key === 'e' || e.key === 'E'){ if (localEngineName()) doExportLocal(); else doExportGIF(); }
+});
+
+/* ---- persistence ---- */
+let saveTimer = 0;
+function save(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try { localStorage.setItem('ggs.v2', JSON.stringify({ P, X })); } catch(e){}
+  }, 400);
+}
+function load(){
+  try {
+    const raw = localStorage.getItem('ggs.v2');
+    if (raw){
+      const o = JSON.parse(raw);
+      if (o.P) Object.assign(P, o.P);
+      if (o.X) Object.assign(X, o.X);
+    }
+  } catch(e){}
+  /* Before v3 the defaults were a 48 colour grid dither at tolerance 18, which is
+     what printed the crosshatch and the smearing. Upgrade those values only where
+     they still equal the old defaults, so deliberate choices survive. */
+  if (!(X.v >= 3)){
+    if (X.deltaThresh === 18 || X.deltaThresh === 12) X.deltaThresh = 4;
+    if (X.dither === 'ordered' && (X.maxColors === 48 || X.maxColors === 64)) X.dither = 'blue';
+    if (typeof X.ditherAmt !== 'number') X.ditherAmt = 0.6;
+    X.v = 3;
+  }
+  /* crop used to be a single uniform zoom */
+  if (typeof X.zoomX !== 'number') X.zoomX = typeof X.zoom === 'number' ? X.zoom : 1;
+  if (typeof X.zoomY !== 'number') X.zoomY = typeof X.zoom === 'number' ? X.zoom : 1;
+  if (typeof X.linkZoom !== 'boolean') X.linkZoom = Math.abs(X.zoomX - X.zoomY) < 0.001;
+  delete X.zoom;
+}
+
+/* ---- boot ---- */
+load();
+let rsz;
+window.addEventListener('resize', () => { clearTimeout(rsz); rsz = setTimeout(sizePreview, 120); });
+sizePreview();
+refresh();
+paintSize();
+requestAnimationFrame(tick);
+
+$('#ver').textContent = 'v' + APP_VERSION;
+detectLocal().then(e => { LOCAL = e; refresh(); });
+(async () => {
+  if (location.protocol === 'file:') return;
+  try {
+    /* cache: 'reload' on the bare address both reads the current file and
+       replaces any stale copy the browser was holding for it, so opening this
+       version once also repairs the plain URL for next time. Verified in
+       Chromium: the plain URL went from a 0 byte cached copy to the live file. */
+    const r = await fetch(location.pathname, { cache: 'reload' });
+    const m = (await r.text()).match(new RegExp('const APP_' + 'VERSION = \'([^\']+)\''));
+    if (m && m[1] !== APP_VERSION){
+      const bar = document.createElement('div'); bar.className = 'update-bar';
+      bar.innerHTML = '<span>A newer version of the studio is available (v' + m[1] + '). You are running v' + APP_VERSION + '.</span>';
+      const go = document.createElement('button'); go.className = 'btn sm primary'; go.textContent = 'Load it';
+      go.onclick = () => location.replace(location.pathname + '?v=' + encodeURIComponent(m[1]));
+      bar.appendChild(go); document.body.appendChild(bar);
+    }
+  } catch(e){}
+})();
+</script>
+</body>
+</html>

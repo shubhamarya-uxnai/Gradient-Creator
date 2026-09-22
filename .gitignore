@@ -1,0 +1,10 @@
+# gifski is downloaded by start.py on the first run
+bin/
+
+# exports saved into this folder
+*.gif
+*.webm
+*-frames.zip
+
+__pycache__/
+.DS_Store
