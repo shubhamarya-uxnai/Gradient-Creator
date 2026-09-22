@@ -21,6 +21,10 @@ The server gives the page a one click GIF endpoint:
   GET  /api/health                      which encoders are installed
   POST /api/gif?fps=&quality=&target=&engine=
                                         body: zip of frame_*.png, returns the GIF
+  POST /api/gif?format=rgba&w=&h=&n=&fps=&quality=
+                                        body: n raw RGBA frames back to back, read
+                                        one frame at a time and written as PNGs
+                                        here (much faster than PNGs made in the page)
 With a target (bytes), the encode starts at the requested quality and steps
 down until the file fits, so one click returns the best quality that fits the
 size budget. The frames are uploaded once and re-encoded from disk.
@@ -51,17 +55,20 @@ import urllib.parse
 import urllib.request
 import webbrowser
 import zipfile
+import zlib
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get('GIF_STUDIO_PORT', '5600'))
 MAX_BODY = 400 * 1024 * 1024
+MAX_RAW = 4 * 1024 * 1024 * 1024   # raw frames are streamed to disk one at a time, never held whole
 ALLOWED_ORIGINS = set()
 ALLOWED_HOSTS = set()
 FRAME_NAME = re.compile(r'^frame_\d{3,6}\.png$')
 JOB_PREFIX = 'gif-studio-job-'
 JOB_LOCK = threading.Lock()
 # Only the studio itself is served, never start.py, bin/ or .git.
-STATIC = {'/': 'index.html', '/index.html': 'index.html', '/styles.css': 'styles.css'}
+STATIC = {'/': 'index.html', '/index.html': 'index.html', '/styles.css': 'styles.css',
+          '/vendor/gifski_wasm.js': 'vendor/gifski_wasm.js', '/vendor/gifski_wasm_bg.wasm': 'vendor/gifski_wasm_bg.wasm'}
 OLD_URLS = {'/gradient-gif-studio.html'}   # earlier address, sent on to /
 HOSTED_ORIGIN = 'https://shubhamarya-uxnai.github.io'   # the online studio, on GitHub Pages
 HOSTED_URL = HOSTED_ORIGIN + '/Gradient-Creator/'
@@ -148,6 +155,62 @@ def png_size(path):
     return struct.unpack('>II', head[16:24])
 
 
+def write_png(path, w, h, rgba):
+    """Minimal RGBA PNG: no filtering, fast deflate. gifski only needs to read it back."""
+    stride = w * 4
+    raw = bytearray((stride + 1) * h)
+    mv = memoryview(rgba)
+    for y in range(h):
+        o = y * (stride + 1)
+        raw[o + 1:o + 1 + stride] = mv[y * stride:(y + 1) * stride]
+
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)
+    with open(path, 'wb') as f:
+        f.write(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0))
+                + chunk(b'IDAT', zlib.compress(bytes(raw), 1)) + chunk(b'IEND', b''))
+
+
+def read_exact(stream, n):
+    parts, got = [], 0
+    while got < n:
+        b = stream.read(min(n - got, 1 << 20))
+        if not b:
+            raise ValueError('the upload ended early')
+        parts.append(b)
+        got += len(b)
+    return b''.join(parts)
+
+
+def raw_frames(stream, work, w, h, n):
+    """Read n raw RGBA frames one at a time and write each as a PNG for gifski."""
+    frames = []
+    for i in range(n):
+        p = os.path.join(work, f'frame_{i:04d}.png')
+        write_png(p, w, h, read_exact(stream, w * h * 4))
+        frames.append(p)
+    return frames
+
+
+def zip_frames(body, work):
+    try:
+        with zipfile.ZipFile(io.BytesIO(body)) as z:
+            names = sorted(n for n in z.namelist() if FRAME_NAME.match(n))
+            if not names:
+                raise ValueError('no frame_NNN.png files in the zip')
+            if sum(z.getinfo(n).file_size for n in names) > MAX_BODY * 2:
+                raise ValueError('frames too large once unpacked')
+            frames = []
+            for name in names:
+                p = os.path.join(work, name)
+                with open(p, 'wb') as f:
+                    f.write(z.read(name))
+                frames.append(p)
+            return frames
+    except zipfile.BadZipFile:
+        raise ValueError('body is not a zip')
+
+
 def encode_gifski(binary, frames, out, fps, quality):
     # Without an explicit size gifski halves anything much over 800x600
     # (1000x1000 came out 500x500), so always pass the frame size.
@@ -179,6 +242,9 @@ def new_job_dir():
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
+                      '.wasm': 'application/wasm', '.js': 'text/javascript'}
+
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store, must-revalidate')
         self.send_header('Expires', '0')
@@ -244,11 +310,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.headers.get('Origin') not in ALLOWED_ORIGINS:
             return self._json(403, {'error': 'only the studio page may use this endpoint'})
         length = int(self.headers.get('Content-Length') or 0)
-        if length <= 0 or length > MAX_BODY:
-            return self._json(413, {'error': 'frames missing or larger than 400 MB'})
-        body = self.rfile.read(length)
-
         q = urllib.parse.parse_qs(query)
+        raw = q.get('format', [''])[0] == 'rgba'
+        if length <= 0 or length > (MAX_RAW if raw else MAX_BODY):
+            return self._json(413, {'error': 'frames missing or too large'})
+        if raw:
+            try:
+                w, h, n = (int(q[k][0]) for k in ('w', 'h', 'n'))
+            except (KeyError, ValueError):
+                return self._json(400, {'error': 'rgba frames need w, h and n'})
+            if not (1 <= w <= 8192 and 1 <= h <= 8192 and 2 <= n <= 5000) or length != w * h * 4 * n:
+                return self._json(400, {'error': 'rgba size does not match w x h x 4 x n'})
+            body = None
+        else:
+            body = self.rfile.read(length)
+
         try:
             fps = min(60.0, max(1.0, float(q.get('fps', ['12.5'])[0])))
             quality = min(100, max(1, int(float(q.get('quality', ['90'])[0]))))
@@ -263,20 +339,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         with JOB_LOCK:
             work = new_job_dir()
             try:
-                with zipfile.ZipFile(io.BytesIO(body)) as z:
-                    names = sorted(n for n in z.namelist() if FRAME_NAME.match(n))
-                    if not names:
-                        return self._json(400, {'error': 'no frame_NNN.png files in the zip'})
-                    if sum(z.getinfo(n).file_size for n in names) > MAX_BODY * 2:
-                        return self._json(413, {'error': 'frames too large once unpacked'})
-                    frames = []
-                    for n in names:
-                        p = os.path.join(work, n)
-                        with open(p, 'wb') as f:
-                            f.write(z.read(n))
-                        frames.append(p)
-            except zipfile.BadZipFile:
-                return self._json(400, {'error': 'body is not a zip'})
+                frames = raw_frames(self.rfile, work, w, h, n) if raw else zip_frames(body, work)
+            except ValueError as e:
+                return self._json(400, {'error': str(e)})
 
             gifski = find_gifski()
             if engine in ('auto', 'gifski') and gifski:

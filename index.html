@@ -25,7 +25,6 @@
         </button>
         <input type="range" class="scrub" id="scrub" min="0" max="100" value="0" step="1">
         <div class="tmeta" id="tmeta">frame 1 / 45</div>
-        <button class="btn sm" id="gifViewBtn" title="Show the exact colours and dither the GIF will contain">GIF view</button>
       </div>
       <div class="overlay" id="overlay">
         <div class="ovbox">
@@ -47,7 +46,7 @@
 /* Bump on every change. The page compares this with the copy on disk, so a
    browser holding a stale cached version says so instead of silently running
    old code, which is what happened for most of 22 Sep. */
-const APP_VERSION = '2026.09.22-19';
+const APP_VERSION = '2026.09.22-23';
 /* ============================================================
    Gradient GIF Studio
    Self contained. No network, no libraries, no upload.
@@ -60,9 +59,13 @@ const TAU = Math.PI * 2;
 const $ = (s, r) => (r || document).querySelector(s);
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const lerp = (a, b, t) => a + (b - a) * t;
-const yieldUI = () => new Promise(r => setTimeout(r, 0));
-/* A yield per frame cost more than the encoding did, because setTimeout is clamped
-   and throttled harder when the window is not in front. Yield on a time budget
+/* Yield through a message channel, not setTimeout: browsers stretch timers to a
+   second or more in background tabs (a 60 frame export took 68 s instead of 5),
+   but leave message tasks alone. */
+const _yc = new MessageChannel(), _yq = [];
+_yc.port1.onmessage = () => { const r = _yq.shift(); if (r) r(); };
+const yieldUI = () => new Promise(r => { _yq.push(r); _yc.port2.postMessage(0); });
+/* A yield per frame cost more than the encoding did. Yield on a time budget
    instead: the progress bar still moves, the work runs at full speed. */
 let _yt = 0;
 async function breathe(){
@@ -179,23 +182,13 @@ const P = {
 const DEFAULTS = JSON.parse(JSON.stringify(P));
 
 const X = {
-  /* 800 square at 20fps for 3s is 60 full frames and lands around 10 MB, which is
-     unusable. These defaults are measured to land near 2 MB on typical content. */
+  /* Every frame costs about the same, so frame count is the biggest lever on
+     weight. 600 square at 12.5 fps for 2.4 s is 30 frames, measured at about
+     2.3 MB with gifski on a Mac and 3.9 MB with gifski in the browser. */
   w: 600, h: 600,
   fps: 12.5, dur: 2.4,
-  maxColors: 48,
-  dither: 'blue',
-  ditherAmt: 0.6,
-  deltaOn: true,
-  /* Tolerance above about 8 lets pixels hold stale colours until they drift far
-     enough, and neighbours refresh at different moments, so the loop smears into
-     blotches and contour trails that grow toward the end. 4 stays invisible. */
-  deltaThresh: 4,
-  loop: 0,
-  targetKB: 2560,
-  localQuality: 90,  /* the most it will use; it steps down to fit the target */
   zoomX: 1, zoomY: 1, linkZoom: true, panX: 0.5, panY: 0.5,
-  v: 3
+  v: 4
 };
 
 const STYLES = [
@@ -847,205 +840,7 @@ function drawFrame(ctx, W, H, t, p, fi){
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
 }
 
-/* ---------- 4. gif encoder ---------- */
-class ByteStream {
-  constructor(){ this.b = new Uint8Array(1 << 18); this.n = 0; }
-  need(k){
-    if (this.n + k <= this.b.length) return;
-    let s = this.b.length;
-    while (s < this.n + k) s *= 2;
-    const nb = new Uint8Array(s);
-    nb.set(this.b.subarray(0, this.n));
-    this.b = nb;
-  }
-  u8(v){ this.need(1); this.b[this.n++] = v & 255; }
-  u16(v){ this.need(2); this.b[this.n++] = v & 255; this.b[this.n++] = (v >> 8) & 255; }
-  raw(a){ this.need(a.length); this.b.set(a, this.n); this.n += a.length; }
-  str(s){ this.need(s.length); for (let i = 0; i < s.length; i++) this.b[this.n++] = s.charCodeAt(i) & 255; }
-  out(){ return this.b.subarray(0, this.n); }
-}
-
-const LZW_TABLE = new Int32Array(1 << 20);
-
-function lzwCompress(minCodeSize, px, bs){
-  const clear = 1 << minCodeSize, eoi = clear + 1;
-  let codeSize = minCodeSize + 1, next = eoi + 1;
-  const tbl = LZW_TABLE;
-  tbl.fill(-1);
-  let acc = 0, accBits = 0, cn = 0;
-  const chunk = new Uint8Array(255);
-  const flushChunk = () => { if (cn){ bs.u8(cn); bs.raw(chunk.subarray(0, cn)); cn = 0; } };
-  const putByte = b => { chunk[cn++] = b; if (cn === 255) flushChunk(); };
-  const emit = code => {
-    acc |= code << accBits; accBits += codeSize;
-    while (accBits >= 8){ putByte(acc & 255); acc >>>= 8; accBits -= 8; }
-  };
-  emit(clear);
-  let prefix = px[0];
-  if (prefix >= clear) throw new Error('GIF colour index ' + prefix + ' is outside a ' + clear + ' colour table (pixel 0)');
-  for (let i = 1; i < px.length; i++){
-    const k = px[i];
-    if (k >= clear) throw new Error('GIF colour index ' + k + ' is outside a ' + clear + ' colour table (pixel ' + i + ')');
-    const key = (prefix << 8) | k;
-    const v = tbl[key];
-    if (v >= 0){ prefix = v; continue; }
-    emit(prefix);
-    if (next === 4096){
-      emit(clear); tbl.fill(-1); next = eoi + 1; codeSize = minCodeSize + 1;
-    } else {
-      if (next >= (1 << codeSize)) codeSize++;
-      tbl[key] = next++;
-    }
-    prefix = k;
-  }
-  emit(prefix);
-  emit(eoi);
-  if (accBits > 0) putByte(acc & 255);
-  flushChunk();
-  bs.u8(0);
-}
-
-function gctBits(len){ let n = 1; while ((1 << n) < len) n++; return clamp(n, 1, 8); }
-
-function gifHeader(bs, w, h, pal, bits, loop){
-  bs.str('GIF89a'); bs.u16(w); bs.u16(h);
-  bs.u8(0x80 | 0x70 | (bits - 1)); bs.u8(0); bs.u8(0);
-  const len = 1 << bits;
-  for (let i = 0; i < len; i++){
-    const c = pal[i];
-    if (c){ bs.u8(c[0]); bs.u8(c[1]); bs.u8(c[2]); } else { bs.u8(0); bs.u8(0); bs.u8(0); }
-  }
-  bs.u8(0x21); bs.u8(0xFF); bs.u8(0x0B); bs.str('NETSCAPE2.0');
-  bs.u8(0x03); bs.u8(0x01); bs.u16(loop); bs.u8(0);
-}
-
-function gifFrame(bs, px, x, y, w, h, delayCs, tIdx, bits){
-  bs.u8(0x21); bs.u8(0xF9); bs.u8(0x04);
-  bs.u8((1 << 2) | (tIdx >= 0 ? 1 : 0));
-  bs.u16(delayCs);
-  bs.u8(tIdx >= 0 ? tIdx : 0);
-  bs.u8(0);
-  bs.u8(0x2C); bs.u16(x); bs.u16(y); bs.u16(w); bs.u16(h); bs.u8(0);
-  const mcs = Math.max(2, bits);
-  bs.u8(mcs);
-  lzwCompress(mcs, px, bs);
-}
-
-/* ---------- 5. quantiser ---------- */
-const HB = 6, HS = 1 << (HB * 3), HSHIFT = 8 - HB;
-/* Each palette build gets its own histogram. It used to be one shared set of
-   arrays, which was only safe while nothing else could build a palette at the
-   same time; the GIF view preview can, between the frames of an export. */
-function makeHist(){ return { n: new Uint32Array(HS), r: new Uint32Array(HS), g: new Uint32Array(HS), b: new Uint32Array(HS) }; }
-function histAdd(h, data, step){
-  step = (step || 1) * 4;
-  for (let i = 0; i < data.length; i += step){
-    const r = data[i], g = data[i + 1], b = data[i + 2];
-    const k = ((r >> HSHIFT) << (HB * 2)) | ((g >> HSHIFT) << HB) | (b >> HSHIFT);
-    h.n[k]++; h.r[k] += r; h.g[k] += g; h.b[k] += b;
-  }
-}
-function histEntries(h){
-  const e = [];
-  for (let k = 0; k < HS; k++){
-    const n = h.n[k];
-    if (n) e.push({ r: h.r[k] / n, g: h.g[k] / n, b: h.b[k] / n, n });
-  }
-  return e;
-}
-
-function medianCut(ents, maxColors){
-  if (!ents.length) return [[0, 0, 0]];
-  const box = (s, e) => {
-    let rmin = 255, rmax = 0, gmin = 255, gmax = 0, bmin = 255, bmax = 0, n = 0;
-    for (let i = s; i < e; i++){
-      const t = ents[i];
-      if (t.r < rmin) rmin = t.r; if (t.r > rmax) rmax = t.r;
-      if (t.g < gmin) gmin = t.g; if (t.g > gmax) gmax = t.g;
-      if (t.b < bmin) bmin = t.b; if (t.b > bmax) bmax = t.b;
-      n += t.n;
-    }
-    const dr = (rmax - rmin) * 1.0, dg = (gmax - gmin) * 1.2, db = (bmax - bmin) * 0.8;
-    const axis = dr >= dg && dr >= db ? 'r' : (dg >= db ? 'g' : 'b');
-    const range = Math.max(dr, dg, db);
-    return { s, e, n, axis, range, score: range * Math.cbrt(n) };
-  };
-  const boxes = [box(0, ents.length)];
-  while (boxes.length < maxColors){
-    let bi = -1, best = 0;
-    for (let i = 0; i < boxes.length; i++){
-      const b = boxes[i];
-      if (b.e - b.s > 1 && b.range > 0 && b.score > best){ best = b.score; bi = i; }
-    }
-    if (bi < 0) break;
-    const b = boxes[bi], ax = b.axis;
-    const seg = ents.slice(b.s, b.e).sort((p, q) => p[ax] - q[ax]);
-    for (let i = 0; i < seg.length; i++) ents[b.s + i] = seg[i];
-    let acc = 0, cut = b.s + 1, half = b.n / 2;
-    for (let i = b.s; i < b.e; i++){ acc += ents[i].n; if (acc >= half){ cut = i + 1; break; } }
-    cut = clamp(cut, b.s + 1, b.e - 1);
-    boxes[bi] = box(b.s, cut);
-    boxes.push(box(cut, b.e));
-  }
-  return boxes.map(b => {
-    let R = 0, G = 0, B = 0, N = 0;
-    for (let i = b.s; i < b.e; i++){ const t = ents[i]; R += t.r * t.n; G += t.g * t.n; B += t.b * t.n; N += t.n; }
-    return [clamp(Math.round(R / N), 0, 255), clamp(Math.round(G / N), 0, 255), clamp(Math.round(B / N), 0, 255)];
-  });
-}
-
-class Quant {
-  constructor(pal){
-    this.n = pal.length;
-    this.R = new Uint8Array(this.n); this.G = new Uint8Array(this.n); this.B = new Uint8Array(this.n);
-    for (let i = 0; i < this.n; i++){ this.R[i] = pal[i][0]; this.G[i] = pal[i][1]; this.B[i] = pal[i][2]; }
-    /* nearest-colour lookups cached per palette; a shared cache handed one
-       palette's answers to another whenever two were alive at once */
-    this.cache = new Int16Array(HS).fill(-1);
-    /* Median distance from each palette colour to its nearest neighbour: the real
-       spacing of this palette, which is what a positional dither should span. */
-    const nn = new Float32Array(this.n);
-    for (let i = 0; i < this.n; i++){
-      let best = Infinity;
-      for (let j = 0; j < this.n; j++){
-        if (i === j) continue;
-        const dr = this.R[i] - this.R[j], dg = this.G[i] - this.G[j], db = this.B[i] - this.B[j];
-        const d = dr * dr + dg * dg + db * db;
-        if (d < best) best = d;
-      }
-      nn[i] = this.n > 1 ? Math.sqrt(best) : 0;
-    }
-    nn.sort();
-    this.gap = this.n > 1 ? nn[this.n >> 1] : 0;
-  }
-  near(r, g, b){
-    const key = ((r >> HSHIFT) << (HB * 2)) | ((g >> HSHIFT) << HB) | (b >> HSHIFT);
-    const c = this.cache[key];
-    if (c >= 0) return c;
-    const half = 1 << (HSHIFT - 1);
-    const qr = ((r >> HSHIFT) << HSHIFT) + half, qg = ((g >> HSHIFT) << HSHIFT) + half, qb = ((b >> HSHIFT) << HSHIFT) + half;
-    let best = 0, bd = Infinity;
-    for (let i = 0; i < this.n; i++){
-      const dr = qr - this.R[i], dg = qg - this.G[i], db = qb - this.B[i];
-      const d = dr * dr * 0.30 + dg * dg * 0.59 + db * db * 0.11;
-      if (d < bd){ bd = d; best = i; }
-    }
-    this.cache[key] = best;
-    return best;
-  }
-}
-
-const BAYER8 = [
-   0,32, 8,40, 2,34,10,42,
-  48,16,56,24,50,18,58,26,
-  12,44, 4,36,14,46, 6,38,
-  60,28,52,20,62,30,54,22,
-   3,35,11,43, 1,33, 9,41,
-  51,19,59,27,49,17,57,25,
-  15,47, 7,39,13,45, 5,37,
-  63,31,55,23,61,29,53,21
-];
-
+/* ---------- 4. blue noise, for the renderer's final rounding ---------- */
 /* 64x64 blue noise by void-and-cluster (Ulichney 1993), toroidal, built once on
    first use in about 30 ms. Its energy sits at high frequencies, so the eye
    averages it into smooth tone instead of seeing the grid a Bayer matrix prints. */
@@ -1077,90 +872,6 @@ function blueNoise(){
   for (let r = ones; r < S; r++){ const v = voidAt(); B[v] = 1; splat(v, 1); rank[v] = r; }
   for (let p = 0; p < S; p++) rank[p] = (rank[p] + 0.5) / S;
   return (BLUE64 = rank);
-}
-
-function quantize(data, idx, w, h, q, dither, strength){
-  if (dither === 'fs'){
-    let cur = new Float32Array((w + 2) * 3), nxt = new Float32Array((w + 2) * 3);
-    for (let y = 0; y < h; y++){
-      for (let x = 0; x < w; x++){
-        const o = (y * w + x) * 4, e = (x + 1) * 3;
-        const r = clamp(data[o] + cur[e], 0, 255) | 0;
-        const g = clamp(data[o + 1] + cur[e + 1], 0, 255) | 0;
-        const b = clamp(data[o + 2] + cur[e + 2], 0, 255) | 0;
-        const i = q.near(r, g, b);
-        idx[y * w + x] = i;
-        const dr = r - q.R[i], dg = g - q.G[i], db = b - q.B[i];
-        cur[e + 3] += dr * 0.4375; cur[e + 4] += dg * 0.4375; cur[e + 5] += db * 0.4375;
-        nxt[e - 3] += dr * 0.1875; nxt[e - 2] += dg * 0.1875; nxt[e - 1] += db * 0.1875;
-        nxt[e]     += dr * 0.3125; nxt[e + 1] += dg * 0.3125; nxt[e + 2] += db * 0.3125;
-        nxt[e + 3] += dr * 0.0625; nxt[e + 4] += dg * 0.0625; nxt[e + 5] += db * 0.0625;
-      }
-      const tmp = cur; cur = nxt; nxt = tmp; nxt.fill(0);
-    }
-  } else if (dither === 'ordered' || dither === 'blue'){
-    /* The swing is scaled to this palette's real spacing. It used to assume the
-       palette was spread over the whole colour cube, but median cut crowds the
-       palette into the colours actually used, so the old swing overshot the gap
-       1.2 to 2.2 times and printed a visible crosshatch over every gradient.
-       Measured on real artwork: nearly all the anti-banding benefit arrives by
-       0.6 to 0.75 of the gap, and 0.6 carries about 35 per cent less grain. */
-    const amp = q.gap * (strength == null ? 0.6 : strength);
-    const map = dither === 'blue' ? blueNoise() : null;
-    for (let y = 0; y < h; y++){
-      for (let x = 0; x < w; x++){
-        const o = (y * w + x) * 4;
-        const t = map ? map[(y & 63) * 64 + (x & 63)] : BAYER8[(y & 7) * 8 + (x & 7)] / 63;
-        const th = (t - 0.5) * amp;
-        idx[y * w + x] = q.near(
-          clamp(data[o] + th, 0, 255) | 0,
-          clamp(data[o + 1] + th, 0, 255) | 0,
-          clamp(data[o + 2] + th, 0, 255) | 0);
-      }
-    }
-  } else {
-    const n = w * h;
-    for (let i = 0; i < n; i++){
-      const o = i * 4;
-      idx[i] = q.near(data[o], data[o + 1], data[o + 2]);
-    }
-  }
-}
-
-/* replace unchanged pixels with the transparent index, return changed bounding box */
-function applyDelta(idx, state, data, q, thresh, tIdx, w, h){
-  const t2 = thresh * thresh;
-  let minX = w, minY = h, maxX = -1, maxY = -1;
-  for (let y = 0; y < h; y++){
-    const row = y * w;
-    for (let x = 0; x < w; x++){
-      const p = row + x, prev = state[p], cur = idx[p];
-      let same = prev === cur;
-      if (!same && t2 > 0){
-        const o = p * 4;
-        const dr = data[o] - q.R[prev], dg = data[o + 1] - q.G[prev], db = data[o + 2] - q.B[prev];
-        if (dr * dr * 0.30 + dg * dg * 0.59 + db * db * 0.11 <= t2) same = true;
-      }
-      if (same){ idx[p] = tIdx; }
-      else {
-        state[p] = cur;
-        if (x < minX) minX = x; if (x > maxX) maxX = x;
-        if (y < minY) minY = y; if (y > maxY) maxY = y;
-      }
-    }
-  }
-  if (maxX < 0) return null;
-  return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
-}
-
-function cropIndices(idx, w, bb){
-  if (bb.x === 0 && bb.w === w) return idx.subarray(bb.y * w, (bb.y + bb.h) * w);
-  const out = new Uint8Array(bb.w * bb.h);
-  for (let y = 0; y < bb.h; y++){
-    const s = (bb.y + y) * w + bb.x;
-    out.set(idx.subarray(s, s + bb.w), y * bb.w);
-  }
-  return out;
 }
 
 /* ---------- 6. export pipeline ---------- */
@@ -1206,167 +917,6 @@ function delayCs(x){ return Math.max(2, Math.round(100 / x.fps)); }
 function realFps(x){ return 100 / delayCs(x); }
 
 function snapshotParams(){ return JSON.parse(JSON.stringify(P)); }
-
-async function buildPalette(x, params, want, onProg){
-  const n = frameCount(x);
-  const sw = Math.min(x.w, 240), sh = Math.max(1, Math.round(sw * x.h / x.w));
-  const hist = makeHist();
-  const samples = Math.min(n, 10);
-  for (let i = 0; i < samples; i++){
-    const fi = Math.round(i * n / samples);
-    /* render and read back in one step, so a yield can never land between
-       drawing into the shared buffer and reading it */
-    const b = buf('pal', sw, sh, true);
-    renderOut(b.x, sw, sh, fi / n, params, fi, cropOf(x));
-    histAdd(hist, b.x.getImageData(0, 0, sw, sh).data, 1);
-    if (onProg) onProg((i + 1) / samples);
-    await breathe();
-  }
-  return medianCut(histEntries(hist), Math.max(2, want));
-}
-
-async function encodeGIF(x, params, onProg, token){
-  if (typeof ENCODING === 'number') ENCODING++;
-  try { return await encodeGIFInner(x, params, onProg, token); }
-  finally { if (typeof ENCODING === 'number') ENCODING--; }
-}
-async function encodeGIFInner(x, params, onProg, token){
-  const n = frameCount(x), dcs = delayCs(x);
-  const reserve = x.deltaOn ? 1 : 0;
-  const pal = await buildPalette(x, params, Math.min(256 - reserve, x.maxColors), p => onProg && onProg(p * 0.12, 'Building palette'));
-  const q = new Quant(pal);
-  const tIdx = reserve ? pal.length : -1;
-  const bits = gctBits(pal.length + reserve);
-  const bs = new ByteStream();
-  gifHeader(bs, x.w, x.h, pal, bits, x.loop);
-
-  const idx = new Uint8Array(x.w * x.h);
-  let state = null;
-
-  const b = buf('out', x.w, x.h, true);
-  for (let f = 0; f < n; f++){
-    if (token && token.cancel) return null;
-    renderOut(b.x, x.w, x.h, f / n, params, f, cropOf(x));
-    const data = b.x.getImageData(0, 0, x.w, x.h).data;
-    quantize(data, idx, x.w, x.h, q, x.dither, x.ditherAmt);
-    /* With frame delta off there is no transparent index in the palette, so every
-       frame must be a complete opaque picture. Running the delta step anyway used
-       to write -1 into unchanged pixels, which a byte stores as 255, an index the
-       colour table does not have. That corrupted every frame after the first:
-       Chrome papered over it, Apple's decoder and Pillow rejected the file. */
-    if (f === 0 || !x.deltaOn){
-      gifFrame(bs, idx, 0, 0, x.w, x.h, dcs, -1, bits);
-      if (x.deltaOn) state = Uint8Array.from(idx);
-    } else {
-      const bb = applyDelta(idx, state, data, q, x.deltaThresh, tIdx, x.w, x.h);
-      if (!bb){
-        gifFrame(bs, new Uint8Array([tIdx]), 0, 0, 1, 1, dcs, tIdx, bits);
-      } else {
-        gifFrame(bs, cropIndices(idx, x.w, bb), bb.x, bb.y, bb.w, bb.h, dcs, tIdx, bits);
-      }
-    }
-    if (onProg) onProg(0.12 + 0.88 * (f + 1) / n, 'Frame ' + (f + 1) + ' of ' + n);
-    await breathe();
-  }
-  bs.u8(0x3B);
-  return bs.out().slice();
-}
-
-/* Size is measured, never predicted.
-   Two sampling estimators were built and thrown away first. A frame probe ran
-   13 to 32 per cent light, always low, because a real encode carries stale
-   pixels forward that a fresh probe cannot reproduce. A two scale power law
-   extrapolation was better at about 6 per cent, but it cost 1.2s against 1.4s
-   for a real 800x800 60 frame encode. Guessing was neither faster nor honest,
-   so the tool just encodes and reports the true byte count. The bytes are kept
-   so that exporting straight after measuring costs nothing. */
-let LAST = { key: '', bytes: null };
-/* Bytes per frame-pixel. Seeded from measurements across several presets, then
-   replaced by the real figure every time a GIF is actually encoded, so the
-   rough readout converges on this machine and this artwork. */
-const CAL = { bpp: 0.255, dither: 'blue', colors: 48 };
-const DITHER_COST = { none: 0.8, ordered: 1, blue: 1.07, fs: 1.3 };
-function roughBytes(x){
-  const f = (DITHER_COST[x.dither] || 1) / (DITHER_COST[CAL.dither] || 1)
-          * Math.pow(Math.max(4, x.maxColors) / CAL.colors, 0.35);
-  return Math.round(CAL.bpp * frameCount(x) * x.w * x.h * f);
-}
-function calibrate(x, bytes){
-  const n = frameCount(x) * x.w * x.h;
-  if (n > 0){ CAL.bpp = bytes / n; CAL.dither = x.dither; CAL.colors = x.maxColors; }
-}
-function cfgKey(x, params){
-  return [x.w, x.h, x.fps, x.dur, x.maxColors, x.dither, x.ditherAmt, x.deltaOn, x.deltaThresh, x.loop,
-          x.zoomX, x.zoomY, x.panX, x.panY].join(',') + '|' + JSON.stringify(params);
-}
-async function measureGIF(x, params, onProg, token){
-  const key = cfgKey(x, params);
-  if (LAST.key === key && LAST.bytes) return LAST.bytes;
-  const bytes = await encodeGIF(x, params, onProg, token);
-  if (bytes){ LAST = { key, bytes }; calibrate(x, bytes.length); }
-  return bytes;
-}
-
-/* Reduction plan, ordered by measured cost per unit of visible damage.
-   Colours come first, since blue noise keeps a small palette reading smooth.
-   Delta tolerance is deliberately absent: raising it was the cause of the
-   smeared, blotchy frames late in the loop, so it is never traded for bytes. */
-const PLAN = [
-  { k: 'colors', v: 128 }, { k: 'colors', v: 96 },
-  { k: 'colors', v: 64 },  { k: 'fps', v: 16 },
-  { k: 'colors', v: 48 },  { k: 'fps', v: 12.5 },   { k: 'colors', v: 32 },
-  { k: 'scale', v: 0.8 },  { k: 'fps', v: 10 },
-  { k: 'colors', v: 24 },  { k: 'scale', v: 0.65 }, { k: 'colors', v: 16 },
-  { k: 'fps', v: 8 },      { k: 'scale', v: 0.5 },  { k: 'colors', v: 12 },
-  { k: 'scale', v: 0.4 },  { k: 'colors', v: 8 },   { k: 'fps', v: 6.25 },
-  { k: 'scale', v: 0.32 }
-];
-
-/* walk the plan from i, apply the first move that is an actual reduction */
-function nextStep(x, base, i){
-  const c = Object.assign({}, x);
-  if (!c.deltaOn){ c.deltaOn = true; c.deltaThresh = Math.min(c.deltaThresh || 4, 4); return { cfg: c, i }; }
-  for (; i < PLAN.length; i++){
-    const m = PLAN[i];
-    if (m.k === 'colors' && c.maxColors > m.v){ c.maxColors = m.v; return { cfg: c, i: i + 1 }; }
-    if (m.k === 'fps' && c.fps > m.v){ c.fps = m.v; return { cfg: c, i: i + 1 }; }
-    if (m.k === 'delta' && c.deltaThresh < m.v){ c.deltaThresh = m.v; return { cfg: c, i: i + 1 }; }
-    if (m.k === 'scale' && c.w > Math.round(base.w * m.v)){
-      c.w = Math.max(48, Math.round(base.w * m.v / 2) * 2);
-      c.h = Math.max(48, Math.round(base.h * m.v / 2) * 2);
-      return { cfg: c, i: i + 1 };
-    }
-  }
-  return null;
-}
-
-async function fitToTarget(x, params, targetBytes, onProg, token){
-  const base = { w: x.w, h: x.h };
-  let cur = Object.assign({}, x), best = null, pi = 0, tries = 0;
-  const MAX = 9;
-  while (tries < MAX){
-    if (token && token.cancel) return null;
-    const label = cur.w + 'x' + cur.h + ', ' + cur.maxColors + ' colours, ' + (+realFps(cur).toFixed(1)) + ' fps';
-    const bytes = await measureGIF(cur, params,
-      (p, l) => onProg((tries + p) / MAX, label + '  |  ' + l), token);
-    if (!bytes) return null;
-    best = { cfg: cur, bytes };
-    if (bytes.length <= targetBytes) return best;
-    /* jump further down the plan when we are nowhere near, so a big overshoot
-       still settles in a handful of encodes rather than twenty */
-    const ratio = bytes.length / targetBytes;
-    let jump = ratio > 6 ? 4 : ratio > 3 ? 3 : ratio > 1.6 ? 2 : 1;
-    let nx = null;
-    while (jump-- > 0){
-      const step = nextStep(cur, base, pi);
-      if (!step) break;
-      nx = step; cur = step.cfg; pi = step.i;
-    }
-    if (!nx) return best;
-    tries++;
-  }
-  return best;
-}
 
 /* ---------- other exports ---------- */
 /* Stored zip (no compression: PNG is already compressed). Enough of the format
@@ -1466,6 +1016,10 @@ const HELPER = 'http://localhost:5600';
 const ON_HELPER = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
 const API = ON_HELPER ? '' : HELPER;
 let LOCAL = null;   /* engines reported by the helper, null when it is not reachable */
+/* gifski's lossy setting on the Mac (motion stays at 100). 80 looked the same as
+   85 in side by side crops and weighs about 7% less; it stays clean down to 60,
+   and specks appear from 40. */
+const MAC_QUALITY = 80;
 let HELPER_ASKED = false;
 function helperWanted(){
   if (HELPER_ASKED) return true;
@@ -1492,7 +1046,7 @@ async function connectHelper(){
   HELPER_ASKED = true;
   try { localStorage.setItem('ggs.helper', '1'); } catch(e){}
   LOCAL = await detectLocal();
-  refresh();
+  EST.key = ''; refresh(); paintSize();
   const e = localEngineName();
   if (e) return toast('Connected: Export best GIF now uses ' + e + ' on this Mac.');
   toast(await deviceAccess() === 'denied'
@@ -1505,6 +1059,11 @@ function localEngineName(){
   if (LOCAL.pillow && LOCAL.pillow.available) return 'Pillow';
   return null;
 }
+function postRaw(frames, count){
+  const qs = 'format=rgba&w=' + X.w + '&h=' + X.h + '&n=' + count + '&fps=' + encodeURIComponent(realFps(X)) +
+             '&quality=' + MAC_QUALITY + '&target=0&engine=auto';
+  return fetch(API + '/api/gif?' + qs, { method: 'POST', body: frames, headers: { 'Content-Type': 'application/octet-stream' } });
+}
 async function doExportLocal(skipGuard){
   return guarded(async () => {
     const engine = localEngineName();
@@ -1515,16 +1074,18 @@ async function doExportLocal(skipGuard){
         [['Cancel', 'cancel'], ['Export anyway', 'go']]);
       if (pick !== 'go') return;
     }
-    showOverlay('Rendering frames for ' + engine);
+    showOverlay('Drawing frames for ' + engine);
     const t0 = performance.now();
-    const zip = await renderFramesZip((p, l) => prog(p * 0.5, l), token);
-    if (!zip){ hideOverlay(); return; }
-    $('#ovTitle').textContent = 'Encoding with ' + engine;
-    prog(0.55, 'Finding the best quality under ' + fmtBytes(X.targetKB * 1024));
-    const target = X.targetKB * 1024;
-    const qs = 'fps=' + encodeURIComponent(realFps(X)) + '&quality=' + (X.localQuality | 0) + '&target=' + target + '&engine=auto';
+    const n = frameCount(X);
+    /* raw frames, not PNGs: the page took 200 ms a frame to make PNGs of grainy
+       looks, the helper writes them in a few ms */
+    const frames = await renderFramesRGBA(0, n, n, (p, l) => prog(p * 0.5, l));
+    if (!frames){ hideOverlay(); return; }
+    $('#ovTitle').textContent = 'Encoding with ' + engine + ' on this Mac';
+    prog(0.55, 'Encoding ' + n + ' frames');
     let r;
-    try { r = await fetch(API + '/api/gif?' + qs, { method: 'POST', body: zip, headers: { 'Content-Type': 'application/zip' } }); }
+    const sent = frames.length, tPost = performance.now();
+    try { r = await postRaw(frames, n); }
     catch(e){ LOCAL = null; refresh(); throw new Error('the helper on this Mac is not running. Start it with python3 start.py and try again.'); }
     if (!r.ok){
       let msg = r.statusText;
@@ -1532,23 +1093,212 @@ async function doExportLocal(skipGuard){
       throw new Error(msg);
     }
     const gif = await r.blob();
+    /* learn this device's upload rate for big exports, for the next estimate */
+    const upS = (performance.now() - tPost - (+r.headers.get('X-Encode-Ms') || 0)) / 1000;
+    if (sent > 16 * 1048576 && upS > 0.05){
+      MAC_RATE.large = sent / 1048576 / upS;
+      try { localStorage.setItem('ggs.macRate', MAC_RATE.large.toFixed(1)); } catch(e){}
+      EST.key = '';
+    }
     prog(1, 'Done');
     hideOverlay();
     const used = r.headers.get('X-Engine') || engine;
-    const qUsed = +(r.headers.get('X-Quality') || X.localQuality);
-    const fits = r.headers.get('X-Fits') !== '0';
-    const unreachable = r.headers.get('X-Reason') === 'unreachable';
-    /* no question asked: the server already chose the best quality that fits */
     download(gif, fileName('gif'));
-    LAST_LOCAL = { bytes: gif.size, engine: used, quality: qUsed, fits };
-    refresh();
-    const secs = ((performance.now() - t0) / 1000).toFixed(1);
-    toast(fits
-      ? 'GIF saved: ' + fmtBytes(gif.size) + ' at quality ' + qUsed + ' with ' + used + ', ' + secs + 's'
-      : 'Saved at full quality, ' + fmtBytes(gif.size) + '. Lowering quality could not reach your ' + fmtBytes(X.targetKB * 1024) + ' target, so it kept full quality. Shrink the canvas or frame rate to get there.');
+    LAST_EXPORT.mac = { key: estKey(), bytes: gif.size };
+    paintSize();
+    toast('GIF saved: ' + fmtBytes(gif.size) + ' with ' + used + ' on this Mac, ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s');
   });
 }
-let LAST_LOCAL = null;
+/* ---------- gifski in the browser ---------- */
+/* gifski compiled to WebAssembly: gifski-wasm 2.2.0 by jamsinclair (AGPL-3.0),
+   kept in vendor/. It has gifski's per-frame palettes and temporal dithering but
+   not its lossy step, so files run about 1.5x the Mac helper's at the same clean
+   look (3.86 MB against 2.49 MB on a 30 frame 600px loop). Its one dial also
+   lowers motion quality, which brings back blotches, so it always runs at 100.
+   It runs in a worker, so the page keeps drawing and Cancel can stop it. */
+const BROWSER_OK = location.protocol !== 'file:';
+const VENDOR = new URL('vendor/', location.href).href;
+const GW_SRC = `
+let mod = null;
+self.onmessage = async e => {
+  const { id, vendor, frames, count, width, height, durations } = e.data;
+  try {
+    if (!mod){
+      const m = await import(vendor + 'gifski_wasm.js');
+      await m.default(vendor + 'gifski_wasm_bg.wasm');
+      mod = m;
+    }
+    const t0 = performance.now();
+    /* repeat left out on purpose: gifski-wasm treats 0 as play once, and no value as forever */
+    const out = mod.encode(new Uint8Array(frames), count, width, height, undefined, new Uint32Array(durations), 100);
+    self.postMessage({ id, ok: true, bytes: out, ms: performance.now() - t0 }, [out.buffer]);
+  } catch(err){
+    self.postMessage({ id, ok: false, error: String(err && err.message || err) });
+  }
+};`;
+let GW = null, GW_SEQ = 0, BUSY = false;
+const GW_WAIT = new Map();
+function gwWorker(){
+  if (GW) return GW;
+  GW = new Worker(URL.createObjectURL(new Blob([GW_SRC], { type: 'text/javascript' })), { type: 'module' });
+  GW.onmessage = e => { const w = GW_WAIT.get(e.data.id); if (w){ GW_WAIT.delete(e.data.id); w(e.data); } };
+  GW.onerror = e => {
+    const err = { ok: false, error: (e && e.message) || 'the encoder could not start' };
+    GW_WAIT.forEach(w => w(err)); GW_WAIT.clear();
+  };
+  return GW;
+}
+/* stops an encode outright and frees its memory; the next call starts a fresh worker */
+function gwStop(){
+  if (GW){ GW.terminate(); GW = null; }
+  GW_WAIT.forEach(w => w({ ok: false, error: 'cancelled', cancelled: true })); GW_WAIT.clear();
+}
+/* frames: one Uint8Array of count x width x height RGBA, handed to the worker, not copied */
+function gwEncode(frames, count, width, height, delayMs){
+  return new Promise(res => {
+    const id = ++GW_SEQ;
+    GW_WAIT.set(id, res);
+    gwWorker().postMessage({ id, vendor: VENDOR, frames: frames.buffer, count, width, height,
+      durations: new Array(count).fill(delayMs) }, [frames.buffer]);
+  });
+}
+async function renderFramesRGBA(from, count, total, onProg){
+  const W = X.w, H = X.h, sz = W * H * 4, crop = cropOf(X);
+  const all = new Uint8Array(sz * count);
+  const b = buf('gw', W, H, true);
+  for (let i = 0; i < count; i++){
+    if (onProg && token.cancel) return null;
+    const f = (from + i) % total;
+    renderOut(b.x, W, H, f / total, P, f, crop);
+    all.set(b.x.getImageData(0, 0, W, H).data, i * sz);
+    if (onProg){ onProg((i + 1) / count, 'Drawing frame ' + (i + 1) + ' of ' + count); await breathe(); }
+  }
+  return all;
+}
+
+/* ---- estimate: gifski on an eight frame sample ---- */
+/* A GIF is roughly one full frame plus a change record for every frame after
+   it, so encoding the first 4 and the first 8 frames separates the two costs:
+   size = F + (n - 1) x D. Shorter samples read grainy looks 20% high, because
+   gifski smooths grain by looking a few frames ahead. Measured on four looks
+   against full exports: Mac within 7% either way; the browser read 5 to 8%
+   high every time, hence BROWSER_BIAS. The same encodes time this device; the
+   target is within 30% of the real wait, plus a small allowance for start-up. */
+const BROWSER_BIAS = 0.94;
+const padSecs = ms => ms / 1000 + 0.3;
+const EST = { key: '', browser: null, mac: null, running: false, timer: 0 };
+const LAST_EXPORT = { browser: null, mac: null };
+function estKey(){ return JSON.stringify([P, X.w, X.h, X.fps, X.dur, X.zoomX, X.zoomY, X.panX, X.panY, !!localEngineName()]); }
+function scheduleEstimate(){ clearTimeout(EST.timer); EST.timer = setTimeout(runEstimate, 700); }
+function fitModel(ka, a, kb, b, n){
+  const D = Math.max(1, (b - a) / (kb - ka));
+  return Math.max(D, a - (ka - 1) * D) + (n - 1) * D;
+}
+async function runEstimate(){
+  if (!BROWSER_OK || BUSY) return;
+  if (EST.running){ scheduleEstimate(); return; }
+  const key = estKey();
+  if (EST.key === key) return;
+  EST.running = true;
+  try {
+    const n = frameCount(X), W = X.w, H = X.h, delay = delayCs(X) * 10;
+    const t0 = performance.now();
+    const eight = await renderFramesRGBA(0, 8, n, null);
+    const drawMs = (performance.now() - t0) / 8;
+    EST.mac = localEngineName() ? await estimateMac(key, n, eight, drawMs) : null;
+    const four = eight.slice(0, W * H * 4 * 4);
+    const a = await gwEncode(four, 4, W, H, delay);
+    const b = await gwEncode(eight, 8, W, H, delay);
+    if (!a.ok || !b.ok){ if (a.cancelled || b.cancelled) return; throw new Error(a.error || b.error); }
+    if (estKey() !== key) return;
+    const perFrame = Math.max(1, (b.ms - a.ms) / 4), setup = Math.max(0, a.ms - 4 * perFrame);
+    EST.browser = { bytes: BROWSER_BIAS * fitModel(4, a.bytes.length, 8, b.bytes.length, n), secs: padSecs(setup + n * (perFrame + drawMs)) };
+    if (estKey() !== key) return;
+    EST.key = key;
+  } catch(e){ console.warn('Estimate failed:', e); }
+  finally {
+    EST.running = false;
+    paintSize();
+  }
+}
+/* the same eight frames through the helper, at the export's quality */
+/* Sizes come from the sample. Time does not: the helper's start-up swings by
+   300 ms between requests, and Chromium uploads raw frames at about 40 MB/s up
+   to 16 MB but about 16 MB/s beyond (measured), so a small sample reads fast.
+   Time = drawing + upload at the rate for the export's size + gifski's own
+   per-frame time from the sample. A real export teaches this device's rate. */
+const MAC_RATE = { small: 40, large: 16 };   /* MB/s to the helper, including its PNG writing */
+try { const v = +localStorage.getItem('ggs.macRate'); if (v > 1 && v < 1000) MAC_RATE.large = v; } catch(e){}
+function macUploadSecs(bytes){ const mb = bytes / 1048576; return mb / (mb > 16 ? MAC_RATE.large : MAC_RATE.small); }
+async function estimateMac(key, n, eight, drawMs){
+  try {
+    const one = eight.length / 8;
+    const post = async k => {
+      const r = await postRaw(eight.subarray(0, one * k), k);
+      if (!r.ok) throw new Error('helper answered ' + r.status);
+      return { bytes: (await r.blob()).size, enc: +(r.headers.get('X-Encode-Ms') || 0) };
+    };
+    const a = await post(4), c = await post(8);
+    if (estKey() !== key) return null;
+    const gifskiMs = Math.max(1, c.enc / 8) * n;
+    return { bytes: fitModel(4, a.bytes, 8, c.bytes, n), secs: padSecs(n * drawMs + gifskiMs) + macUploadSecs(one * n) };
+  } catch(e){ return null; }
+}
+function fmtSecs(s){
+  if (s < 1.5) return 'a second';
+  if (s < 60) return Math.round(s) + ' s';
+  const m = Math.floor(s / 60), r = Math.round(s % 60);
+  return m + ' min' + (r ? ' ' + r + ' s' : '');
+}
+
+async function doExportBrowser(skipGuard){
+  return guarded(async () => {
+    if (!BROWSER_OK){ toast('Open the studio through python3 start.py or the online link to export GIFs.'); return; }
+    if (!skipGuard && measureMotion() < STILL){
+      const pick = await askOverlay('This loop barely moves',
+        'Only a tiny part of the picture changes over the loop, so the GIF will look like a still image.',
+        [['Cancel', 'cancel'], ['Export anyway', 'go']]);
+      if (pick !== 'go') return;
+    }
+    const n = frameCount(X), W = X.w, H = X.h, mem = n * W * H * 4;
+    if (!skipGuard && mem > 600 * 1024 * 1024){
+      const pick = await askOverlay('Very large for the browser',
+        'This loop needs about ' + fmtBytes(mem * 2) + ' of memory to encode here and may run out. gifski on your Mac handles it easily, or shorten the loop or the canvas.',
+        [['Cancel', 'cancel'], ['Try anyway', 'go']]);
+      if (pick !== 'go') return;
+    }
+    const est = EST.key === estKey() ? EST.browser : null;
+    BUSY = true;
+    showOverlay('Encoding with gifski in your browser');
+    if (est && est.secs > 8) prog(0, 'Takes about ' + fmtSecs(est.secs) + ' at this size. Keep this tab open.');
+    const t0 = performance.now();
+    let timer = 0;
+    try {
+      const frames = await renderFramesRGBA(0, n, n, (p, l) => prog(p * 0.2, l));
+      if (!frames){ hideOverlay(); return; }
+      const encStart = performance.now();
+      const encEst = est ? Math.max(1, est.secs * 1000 - (encStart - t0)) : 0;
+      const tickP = () => {
+        const el = performance.now() - encStart;
+        if (!encEst){ prog(0.5, 'Encoding ' + n + ' frames'); return; }
+        const left = (encEst - el) / 1000;
+        prog(0.2 + 0.78 * Math.min(1, el / encEst), left > 1.5 ? 'About ' + fmtSecs(left) + ' left' : 'Almost done');
+      };
+      tickP(); timer = setInterval(tickP, 250);
+      const r = await gwEncode(frames, n, W, H, delayCs(X) * 10);
+      clearInterval(timer);
+      gwStop();   /* a full export leaves the worker holding a lot of memory */
+      if (!r.ok){ if (r.cancelled) return; throw new Error(r.error); }
+      prog(1, 'Done'); hideOverlay();
+      download(new Blob([r.bytes], { type: 'image/gif' }), fileName('gif'));
+      LAST_EXPORT.browser = { key: estKey(), bytes: r.bytes.length };
+      toast('GIF saved: ' + fmtBytes(r.bytes.length) + ' with gifski in your browser, ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s');
+    } finally {
+      clearInterval(timer); BUSY = false; paintSize();
+    }
+  });
+}
+
 async function doExportFrames(){
   return guarded(async () => {
     showOverlay('Rendering PNG frames');
@@ -1605,11 +1355,10 @@ const cv = $('#preview');
 const pctx = cv.getContext('2d', { willReadFrequently: true });
 let PW = 600, PH = 600;
 let playing = true, previewT = 0, lastT = 0;
-let fileBytes = null, sizeStale = true;
 let activePreset = null;
 let token = { cancel: false };
 
-function markStale(){ sizeStale = true; paintSize(); }
+function markStale(){ paintSize(); }
 function invalidate(){ shapeCache.key = ''; activePreset = null; markStale(); save(); }
 
 /* generic control builders */
@@ -1959,7 +1708,6 @@ group($('#right'), 'Timing', body => {
   addSelect(body, X, 'fps', 'Frame rate', [['25','25 fps'],['20','20 fps'],['16','16 fps'],['12.5','12.5 fps'],['10','10 fps'],['8','8 fps'],['6.25','6.25 fps'],['5','5 fps']], { num: true, on: markStale });
   addRange(body, X, 'dur', 'Loop length', 0.6, 8, 0.1, v => v.toFixed(1) + ' s', { on: markStale });
   addRange(body, P, 'speed', 'Motion speed', 1, 8, 1, v => v + 'x', { on: () => { markStale(); save(); } });
-  addSelect(body, X, 'loop', 'Repeat', [['0','Forever'],['1','Once'],['3','3 times']], { num: true, on: markStale });
   const d = document.createElement('div'); d.className = 'mini';
   REFRESH.push(() => { d.textContent = frameCount(X) + ' frames, plays at ' + (+realFps(X).toFixed(2)) + ' fps'; });
   body.appendChild(d);
@@ -1997,58 +1745,37 @@ group($('#right'), 'Crop', body => {
   body.appendChild(n);
 });
 
-group($('#right'), 'Weight', body => {
-  addRange(body, X, 'maxColors', 'Colours', 4, 256, 1, v => v + '', { on: markStale });
-  addSelect(body, X, 'dither', 'Dither', [['blue','Blue noise, smoothest'],['ordered','Grid, a little lighter'],['none','None, bands on gradients'],['fs','Diffusion, heaviest files']], { on: markStale });
-  addRange(body, X, 'ditherAmt', 'Dither strength', 0, 1.5, 0.05, v => Math.round(v * 100) + '%', { on: markStale, showIf: () => X.dither === 'blue' || X.dither === 'ordered' });
-  addToggle(body, X, 'deltaOn', 'Frame delta', { on: markStale });
-  addRange(body, X, 'deltaThresh', 'Delta tolerance', 0, 24, 1, v => v === 0 ? 'lossless' : String(v), { on: markStale, showIf: () => X.deltaOn });
+let sizeEl, sizeSub, statMac, statBrowser, statFrames, statPx, statMotion, macSub, browserSub;
+group($('#right'), 'Estimate', body => {
+  const st = document.createElement('div'); st.className = 'stat';
+  sizeEl = document.createElement('div'); sizeEl.className = 'size idle'; sizeEl.textContent = '...';
+  sizeSub = document.createElement('div'); sizeSub.className = 'mini';
+  st.appendChild(sizeEl); st.appendChild(sizeSub);
+  const line = (lab) => { const d = document.createElement('div'); d.className = 'statline'; d.innerHTML = '<span>' + lab + '</span><b></b>'; st.appendChild(d); return d.querySelector('b'); };
+  statMac = line('gifski on your Mac'); statBrowser = line('gifski in the browser');
+  statPx = line('Dimensions'); statFrames = line('Frames'); statMotion = line('Motion');
+  body.appendChild(st);
   const n = document.createElement('div'); n.className = 'note';
-  n.innerHTML = 'Every frame costs roughly the same, so <b>frame count is the biggest lever</b>. <b>Blue noise</b> hides the palette as fine grain with no pattern; the grid option prints a regular crosshatch and runs about 5 to 10 per cent lighter. Lower the dither strength if the grain shows, raise it if you see bands. <b>Keep delta tolerance under 8</b>: above that, stale pixels smear into blotches and trails that get worse toward the end of the loop.';
+  n.innerHTML = 'Worked out by running gifski on an eight frame sample of your loop, so it follows the artwork. Every frame costs about the same, so <b>frame count is the biggest lever</b>: a shorter loop or a lower frame rate shrinks the file fastest.';
   body.appendChild(n);
 });
 
-let sizeEl, barEl, statFrames, statPx, statCol, statMotion, measureBtn, targetIn;
-group($('#right'), 'File size', body => {
-  const st = document.createElement('div'); st.className = 'stat';
-  sizeEl = document.createElement('div'); sizeEl.className = 'size idle'; sizeEl.textContent = '--';
-  const bar = document.createElement('div'); bar.className = 'bar'; barEl = document.createElement('i'); bar.appendChild(barEl);
-  st.appendChild(sizeEl); st.appendChild(bar);
-  const line = (lab) => { const d = document.createElement('div'); d.className = 'statline'; d.innerHTML = '<span>' + lab + '</span><b></b>'; st.appendChild(d); return d.querySelector('b'); };
-  statPx = line('Dimensions'); statFrames = line('Frames'); statCol = line('Colours'); statMotion = line('Motion');
-  body.appendChild(st);
-
-  const { row } = mkRow(body, 'Target size');
-  const two = document.createElement('div'); two.className = 'two';
-  targetIn = document.createElement('input'); targetIn.type = 'number'; targetIn.min = 20; targetIn.max = 60000; targetIn.step = 50;
-  targetIn.addEventListener('change', () => { X.targetKB = clamp(parseInt(targetIn.value, 10) || 500, 20, 60000); targetIn.value = X.targetKB; paintSize(); save(); });
-  const unit = document.createElement('div'); unit.className = 'btn sm ghost'; unit.style.pointerEvents = 'none'; unit.textContent = 'KB';
-  two.appendChild(targetIn); two.appendChild(unit); row.appendChild(two);
-  REFRESH.push(() => { targetIn.value = X.targetKB; });
-
-  const chips = document.createElement('div'); chips.className = 'chips';
-  [['250 KB',250],['500 KB',500],['1 MB',1024],['2 MB',2048],['5 MB',5120]].forEach(c => {
-    const b = document.createElement('div'); b.className = 'chip'; b.textContent = c[0];
-    b.onclick = () => { X.targetKB = c[1]; refresh(); paintSize(); save(); };
-    chips.appendChild(b);
-  });
-  body.appendChild(chips);
-
-  const r2 = document.createElement('div'); r2.className = 'btnrow';
-  measureBtn = document.createElement('button'); measureBtn.className = 'btn sm'; measureBtn.textContent = 'Measure exact';
-  measureBtn.onclick = () => doMeasure();
-  const fitBtn = document.createElement('button'); fitBtn.className = 'btn sm'; fitBtn.textContent = 'Fit to target';
-  fitBtn.onclick = () => doFit();
-  r2.appendChild(measureBtn); r2.appendChild(fitBtn); body.appendChild(r2);
-});
-
 group($('#right'), 'Export', body => {
+  /* gifski on this Mac, through the start.py helper: the smallest file at top quality */
   const local = document.createElement('div'); local.className = 'stat hidden'; local.id = 'localBox';
   const lb = document.createElement('button'); lb.className = 'btn primary'; lb.id = 'localBtn';
   lb.onclick = () => doExportLocal();
-  const ls = document.createElement('div'); ls.className = 'mini'; ls.id = 'localStatus';
-  local.appendChild(lb); local.appendChild(ls);
+  macSub = document.createElement('div'); macSub.className = 'mini'; macSub.id = 'localStatus';
+  local.appendChild(lb); local.appendChild(macSub);
   body.appendChild(local);
+  /* gifski in this browser: anyone, nothing to install, clean but heavier */
+  const bx = document.createElement('div'); bx.className = 'stat'; bx.id = 'browserBox';
+  const bb = document.createElement('button'); bb.className = 'btn'; bb.id = 'browserBtn'; bb.textContent = 'Export GIF (gifski in browser)';
+  bb.onclick = () => doExportBrowser();
+  browserSub = document.createElement('div'); browserSub.className = 'mini'; browserSub.id = 'browserStatus';
+  bx.appendChild(bb); bx.appendChild(browserSub);
+  body.appendChild(bx);
+  REFRESH.push(() => { bb.classList.toggle('primary', !localEngineName()); bb.disabled = !BROWSER_OK; });
   /* online copy only: connect to the helper, or download it (the helper fetches gifski itself) */
   const REPO = 'https://github.com/shubhamarya-uxnai/Gradient-Creator';
   const RUN = 'cd ~/Downloads/Gradient-Creator-main && python3 start.py --online';
@@ -2073,21 +1800,11 @@ group($('#right'), 'Export', body => {
   [hb, hn, hs, hd, hr].forEach(el => hc.appendChild(el));
   body.appendChild(hc);
   REFRESH.push(() => hc.classList.toggle('hidden', ON_HELPER || !!localEngineName()));
-  addRange(body, X, 'localQuality', 'Max quality', 25, 100, 1, v => String(v), { on: () => save(), showIf: () => !!localEngineName() });
   REFRESH.push(() => {
     const e = localEngineName();
     local.classList.toggle('hidden', !e);
-    if (!e) return;
-    lb.textContent = 'Export best GIF (' + e + ')';
-    const last = LAST_LOCAL ? ' Last one: ' + fmtBytes(LAST_LOCAL.bytes) + ' at quality ' + LAST_LOCAL.quality + (LAST_LOCAL.fits ? '.' : ', over target.') : '';
-    ls.textContent = (e === 'gifski'
-      ? 'One click: encodes with gifski on this Mac, nothing uploaded.'
-      : 'One click: encodes with Pillow on this Mac, one palette per frame. gifski would make lighter files.')
-      + ' Uses the highest quality that fits your target size.' + last;
+    if (e) lb.textContent = e === 'gifski' ? 'Export best GIF (gifski on your Mac)' : 'Export GIF (' + e + ' on your Mac)';
   });
-  const gif = document.createElement('button'); gif.className = 'btn'; gif.textContent = 'Export GIF (built in)';
-  gif.onclick = () => doExportGIF();
-  body.appendChild(gif);
   const r = document.createElement('div'); r.className = 'btnrow';
   const png = document.createElement('button'); png.className = 'btn sm'; png.textContent = 'PNG still';
   png.onclick = () => exportPNG();
@@ -2125,6 +1842,10 @@ group($('#right'), 'Export', body => {
     } catch(e){ toast('That was not valid settings JSON'); }
   };
   r3.appendChild(cp); r3.appendChild(ps); body.appendChild(r3);
+  const cr = document.createElement('div'); cr.className = 'note';
+  cr.innerHTML = 'GIFs are made by <b>gifski</b> by Kornel Lesiński (gif.ski). In the browser it runs as gifski-wasm by jamsinclair. ' +
+    'This studio is open source under the AGPL-3.0 licence: <a href="' + REPO + '" target="_blank" rel="noopener">source on GitHub</a>.';
+  body.appendChild(cr);
 });
 
 /* ---- estimate display ---- */
@@ -2140,24 +1861,33 @@ function paintMotion(){
 }
 function paintSize(){
   paintMotion();
-  const target = X.targetKB * 1024;
+  if (!sizeEl) return;
   statPx.textContent = X.w + ' x ' + X.h;
   statFrames.textContent = frameCount(X) + ' @ ' + (+realFps(X).toFixed(2)) + ' fps';
-  statCol.textContent = X.maxColors + (X.dither === 'none' ? '' : ', ' + (X.dither === 'fs' ? 'F-S' : 'ordered'));
-  if (fileBytes == null || sizeStale){
-    const rough = roughBytes(X);
-    const r = rough / target;
-    sizeEl.className = 'size ' + (r <= 1 ? 'good' : r <= 1.35 ? 'warn' : 'bad');
-    sizeEl.textContent = '~' + fmtBytes(rough);
-    sizeEl.title = 'Rough figure. Press Measure exact for the real byte count.';
-    barEl.style.width = clamp(r * 100, 2, 100) + '%';
-    return;
+  const key = estKey(), fresh = EST.key === key, mac = !!localEngineName();
+  if (!fresh) scheduleEstimate();
+  const last = w => LAST_EXPORT[w] && LAST_EXPORT[w].key === key ? LAST_EXPORT[w].bytes : null;
+  const line = (w, e) => last(w) != null ? fmtBytes(last(w)) + ', exported'
+    : fresh && e ? '~' + fmtBytes(e.bytes) + ', about ' + fmtSecs(e.secs) : 'estimating...';
+  statMac.parentElement.classList.toggle('hidden', !mac);
+  if (mac) statMac.textContent = line('mac', EST.mac);
+  statBrowser.textContent = BROWSER_OK ? line('browser', EST.browser) : 'open through start.py or online';
+  const w = mac ? 'mac' : 'browser', e = mac ? EST.mac : EST.browser;
+  if (last(w) != null){
+    sizeEl.className = 'size'; sizeEl.textContent = fmtBytes(last(w));
+    sizeSub.textContent = 'Exact, from your last export';
+  } else if (fresh && e){
+    sizeEl.className = 'size'; sizeEl.textContent = '~' + fmtBytes(e.bytes);
+    sizeSub.textContent = mac ? 'With gifski on your Mac, the smallest file' : 'With gifski in the browser';
+  } else {
+    sizeEl.className = 'size idle'; sizeEl.textContent = '...';
+    sizeSub.textContent = BROWSER_OK ? 'Estimating with a quick gifski sample' : 'Open the studio through start.py or the online link';
   }
-  sizeEl.title = 'Exact byte count from a real encode.';
-  sizeEl.textContent = fmtBytes(fileBytes);
-  const ratio = fileBytes / target;
-  sizeEl.className = 'size ' + (ratio <= 1 ? 'good' : ratio <= 1.35 ? 'warn' : 'bad');
-  barEl.style.width = clamp(ratio * 100, 2, 100) + '%';
+  if (macSub) macSub.textContent = 'Smallest file at top quality, made on this Mac, nothing uploaded.' +
+    (fresh && EST.mac ? ' About ' + fmtBytes(EST.mac.bytes) + ', ' + fmtSecs(EST.mac.secs) + '.' : '');
+  if (browserSub) browserSub.textContent = !BROWSER_OK ? 'Needs the studio opened through python3 start.py or the online link.'
+    : 'Runs on this device, nothing to install. Clean, but larger than gifski on a Mac.' +
+      (fresh && EST.browser ? ' About ' + fmtBytes(EST.browser.bytes) + ', takes about ' + fmtSecs(EST.browser.secs) + '.' : '');
 }
 
 function showOverlay(title){
@@ -2190,36 +1920,12 @@ function askOverlay(title, msg, buttons){
     ov.classList.add('show');
   });
 }
-$('#ovCancel').onclick = () => { token.cancel = true; hideOverlay(); toast('Cancelled'); };
+$('#ovCancel').onclick = () => { token.cancel = true; if (BUSY) gwStop(); hideOverlay(); toast('Cancelled'); };
 
 async function guarded(fn){
   try { return await fn(); }
   catch(e){ hideOverlay(); console.error(e); toast('Export failed: ' + (e && e.message || e)); return null; }
 }
-async function doMeasure(){ return guarded(doMeasureInner); }
-async function doMeasureInner(){
-  showOverlay('Measuring exact size');
-  const r = await measureGIF(Object.assign({}, X), snapshotParams(), prog, token);
-  hideOverlay();
-  if (!r) return;
-  fileBytes = r.length; sizeStale = false; paintSize();
-  toast('Exactly ' + fmtBytes(r.length) + '. Export is instant now.');
-}
-
-async function doFit(){ return guarded(doFitInner); }
-async function doFitInner(){
-  showOverlay('Fitting to ' + X.targetKB + ' KB');
-  const res = await fitToTarget(Object.assign({}, X), snapshotParams(), X.targetKB * 1024, prog, token);
-  hideOverlay();
-  if (!res) return;
-  Object.assign(X, res.cfg);
-  fileBytes = res.bytes.length; sizeStale = false;
-  sizePreview(); refresh(); paintSize(); save();
-  if (fileBytes <= X.targetKB * 1024) toast('Fitted to ' + fmtBytes(fileBytes) + ' at ' + X.w + 'x' + X.h + ', ' + X.maxColors + ' colours. Export is instant now.');
-  else toast('Closest reachable is ' + fmtBytes(fileBytes) + '. Shorten the loop or turn off animated grain.');
-}
-
-async function doExportGIF(skipGuard){ return guarded(() => doExportGIFInner(skipGuard)); }
 /* Share of the picture that changes across the loop, from four small renders.
    Grain is switched off for the test, since animated grain would read as motion. */
 function measureMotion(){
@@ -2239,33 +1945,6 @@ function measureMotion(){
   return most;
 }
 const STILL = 0.015;
-
-async function doExportGIFInner(skipGuard){
-  const motion = measureMotion();
-  if (!skipGuard && motion < STILL){
-    const pick = await askOverlay('This loop barely moves',
-      'Only ' + (motion * 100).toFixed(1) + '% of the picture changes over the loop, so the GIF will look like a still image. Raise Travel, Warp or Motion speed, or try another style.',
-      [['Cancel', 'cancel'], ['Export anyway', 'go']]);
-    if (pick !== 'go') return;
-  }
-  showOverlay('Encoding GIF');
-  const t0 = performance.now();
-  const bytes = await measureGIF(Object.assign({}, X), snapshotParams(), prog, token);
-  hideOverlay();
-  if (!bytes) return;
-  fileBytes = bytes.length; sizeStale = false; paintSize();
-  const target = X.targetKB * 1024;
-  if (!skipGuard && bytes.length > target * 1.15){
-    const pick = await askOverlay(
-      fmtBytes(bytes.length) + ', over your ' + fmtBytes(target) + ' target',
-      'Fewer frames, fewer colours or a smaller canvas will bring it down.',
-      [['Fit to target', 'fit'], ['Save anyway', 'save'], ['Cancel', 'cancel']]);
-    if (pick === 'cancel') return;
-    if (pick === 'fit'){ await doFit(); return doExportGIF(true); }
-  }
-  download(new Blob([bytes], { type: 'image/gif' }), fileName('gif'));
-  toast('GIF saved, ' + fmtBytes(bytes.length) + ' in ' + ((performance.now() - t0) / 1000).toFixed(1) + 's');
-}
 
 async function doExportWEBM(){
   if (typeof MediaRecorder === 'undefined'){ toast('This browser cannot record WebM'); return; }
@@ -2289,65 +1968,13 @@ function sizePreview(){
   cv.width = PW; cv.height = PH;
 }
 
-/* GIF view: renders at export size, runs it through the same palette and
-   dither as the export, and shows those pixels, so grain, banding and colour
-   loss are visible before a file is ever made. Frame delta is not simulated;
-   at tolerances under 8 it changes nothing visible. */
-let gifView = false;
-const GV = { key: '', pending: '', q: null, idx: null, building: false, timer: 0 };
-let ENCODING = 0;
-function ensureGifPalette(){
-  const key = cfgKey(X, P);
-  if (GV.key === key || GV.building || ENCODING) return;
-  /* This runs every animation frame. Restarting the timer each time meant it
-     never fired, so only reschedule when the settings actually changed. While a
-     slider is being dragged the key keeps changing, which is the debounce. */
-  if (GV.pending === key) return;
-  clearTimeout(GV.timer);
-  GV.pending = key;
-  GV.timer = setTimeout(async () => {
-    GV.pending = '';
-    if (ENCODING) return;
-    GV.building = true;
-    try {
-      const reserve = X.deltaOn ? 1 : 0;
-      const pal = await buildPalette(Object.assign({}, X), snapshotParams(), Math.min(256 - reserve, X.maxColors));
-      GV.q = new Quant(pal); GV.key = key;
-    } catch(e){ console.error(e); }
-    finally { GV.building = false; }
-  }, 180);
-}
-function drawGifView(t, fi){
-  ensureGifPalette();
-  if (!GV.q || ENCODING){ renderOut(pctx, PW, PH, t, P, fi, cropOf(X)); return; }
-  const b = buf('gv', X.w, X.h, true);
-  renderOut(b.x, X.w, X.h, t, P, fi, cropOf(X));
-  const img = b.x.getImageData(0, 0, X.w, X.h), d = img.data;
-  if (!GV.idx || GV.idx.length !== X.w * X.h) GV.idx = new Uint8Array(X.w * X.h);
-  quantize(d, GV.idx, X.w, X.h, GV.q, X.dither, X.ditherAmt);
-  const q = GV.q, idx = GV.idx;
-  for (let i = 0, o = 0; i < idx.length; i++, o += 4){ const k = idx[i]; d[o] = q.R[k]; d[o + 1] = q.G[k]; d[o + 2] = q.B[k]; d[o + 3] = 255; }
-  b.x.putImageData(img, 0, 0);
-  pctx.setTransform(1, 0, 0, 1, 0, 0);
-  pctx.globalAlpha = 1; pctx.globalCompositeOperation = 'source-over';
-  pctx.imageSmoothingEnabled = true; pctx.imageSmoothingQuality = 'high';
-  pctx.clearRect(0, 0, PW, PH);
-  pctx.drawImage(b.c, 0, 0, PW, PH);
-}
-$('#gifViewBtn').onclick = () => {
-  gifView = !gifView;
-  $('#gifViewBtn').classList.toggle('primary', gifView);
-  if (gifView) toast('GIF view: showing the exact colours and dither of the export');
-};
-
 function tick(now){
   const dt = lastT ? now - lastT : 16;
   lastT = now;
   if (playing) previewT = (previewT + dt / (X.dur * 1000)) % 1;
   const n = frameCount(X);
   const fi = clamp(Math.floor(previewT * n), 0, n - 1);
-  if (gifView) drawGifView(fi / n, fi);
-  else renderOut(pctx, PW, PH, fi / n, P, fi, cropOf(X));
+  renderOut(pctx, PW, PH, fi / n, P, fi, cropOf(X));
   $('#tmeta').textContent = 'frame ' + (fi + 1) + ' / ' + n;
   const sc = $('#scrub');
   if (document.activeElement !== sc) sc.value = Math.round(previewT * 100);
@@ -2450,7 +2077,7 @@ document.addEventListener('keydown', e => {
     if (e.shiftKey) randomiseAll();
     else { P.seed = 1 + Math.floor(Math.random() * 99999); invalidate(); refresh(); }
   }
-  else if (e.key === 'e' || e.key === 'E'){ if (localEngineName()) doExportLocal(); else doExportGIF(); }
+  else if (e.key === 'e' || e.key === 'E'){ if (localEngineName()) doExportLocal(); else doExportBrowser(); }
 });
 
 /* ---- persistence ---- */
@@ -2470,15 +2097,9 @@ function load(){
       if (o.X) Object.assign(X, o.X);
     }
   } catch(e){}
-  /* Before v3 the defaults were a 48 colour grid dither at tolerance 18, which is
-     what printed the crosshatch and the smearing. Upgrade those values only where
-     they still equal the old defaults, so deliberate choices survive. */
-  if (!(X.v >= 3)){
-    if (X.deltaThresh === 18 || X.deltaThresh === 12) X.deltaThresh = 4;
-    if (X.dither === 'ordered' && (X.maxColors === 48 || X.maxColors === 64)) X.dither = 'blue';
-    if (typeof X.ditherAmt !== 'number') X.ditherAmt = 0.6;
-    X.v = 3;
-  }
+  /* v4 dropped the built-in encoder and the size target */
+  ['maxColors', 'dither', 'ditherAmt', 'deltaOn', 'deltaThresh', 'loop', 'targetKB', 'localQuality'].forEach(k => delete X[k]);
+  X.v = 4;
   /* crop used to be a single uniform zoom */
   if (typeof X.zoomX !== 'number') X.zoomX = typeof X.zoom === 'number' ? X.zoom : 1;
   if (typeof X.zoomY !== 'number') X.zoomY = typeof X.zoom === 'number' ? X.zoom : 1;
@@ -2496,7 +2117,7 @@ paintSize();
 requestAnimationFrame(tick);
 
 $('#ver').textContent = 'v' + APP_VERSION;
-detectLocal().then(e => { LOCAL = e; refresh(); });
+detectLocal().then(e => { LOCAL = e; EST.key = ''; refresh(); paintSize(); });
 (async () => {
   if (location.protocol === 'file:') return;
   try {
