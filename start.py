@@ -9,9 +9,10 @@
 2. Starts a small server on this Mac (127.0.0.1 only, nothing is uploaded).
 3. Opens the studio in your default browser.
 
-The online studio (GitHub Pages) can use this helper too: open it, click "Use
-gifski on this Mac" and allow the browser's prompt. Only that page and the local
-copy are let in; every other website is refused.
+The online studio can use this helper too, on GitHub Pages or inside the Framer
+code component on bunnyarya.framer.website: open it, click "Use gifski on this
+Mac" and allow the browser's prompt. Only those two sites and the local copy are
+let in; every other website is refused.
 
 Options: --online to open the online studio instead of the local copy,
 --port 5601 to use another port (the online studio only looks on 5600),
@@ -72,6 +73,8 @@ STATIC = {'/': 'index.html', '/index.html': 'index.html', '/styles.css': 'styles
 OLD_URLS = {'/gradient-gif-studio.html'}   # earlier address, sent on to /
 HOSTED_ORIGIN = 'https://shubhamarya-uxnai.github.io'   # the online studio, on GitHub Pages
 HOSTED_URL = HOSTED_ORIGIN + '/Gradient-Creator/'
+FRAMER_ORIGIN = 'https://bunnyarya.framer.website'       # the studio inside the Framer code component
+TRUSTED_SITES = {HOSTED_ORIGIN, FRAMER_ORIGIN}
 
 GIFSKI_VERSION = '1.34.0'
 GIFSKI_URL = f'https://github.com/ImageOptim/gifski/releases/download/{GIFSKI_VERSION}/gifski-{GIFSKI_VERSION}.tar.xz'
@@ -83,7 +86,7 @@ def set_port(port):
     global PORT, ALLOWED_ORIGINS, ALLOWED_HOSTS
     PORT = port
     ALLOWED_HOSTS = {f'localhost:{port}', f'127.0.0.1:{port}'}
-    ALLOWED_ORIGINS = {'http://' + h for h in ALLOWED_HOSTS} | {HOSTED_ORIGIN}
+    ALLOWED_ORIGINS = {'http://' + h for h in ALLOWED_HOSTS} | TRUSTED_SITES
 
 
 def find_gifski():
@@ -248,15 +251,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store, must-revalidate')
         self.send_header('Expires', '0')
-        if self.headers.get('Origin') == HOSTED_ORIGIN:   # the online studio calls across origins
-            self.send_header('Access-Control-Allow-Origin', HOSTED_ORIGIN)
+        origin = self.headers.get('Origin')
+        if origin in TRUSTED_SITES:   # the online studio calls across origins
+            self.send_header('Access-Control-Allow-Origin', origin)
             self.send_header('Vary', 'Origin')
         super().end_headers()
 
     def do_OPTIONS(self):
         """Preflight from the online studio. Anything else is refused."""
         path = urllib.parse.urlsplit(self.path).path
-        if (self.headers.get('Origin') != HOSTED_ORIGIN or not path.startswith('/api/')
+        if (self.headers.get('Origin') not in TRUSTED_SITES or not path.startswith('/api/')
                 or self.headers.get('Host') not in ALLOWED_HOSTS):
             return self._json(403, {'error': 'not allowed'})
         self.send_response(204)

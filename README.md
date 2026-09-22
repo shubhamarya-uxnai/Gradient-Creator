@@ -8,6 +8,25 @@ Animated gradient loops with glass, dot and halftone effects, exported as GIFs b
 
 Works in any modern browser with nothing to install: **Export GIF (gifski in browser)** runs gifski right in the page. For the smallest files, connect gifski on your Mac: see [Use gifski from the online studio](#use-gifski-from-the-online-studio).
 
+## Use it in Framer
+
+The studio can live on a Framer page while everything still comes from this repo. `framer/GradientCreator.tsx` is a small code component: it loads the studio's page, `styles.css` and gifski from GitHub through jsDelivr, pinned to one release, adds your design system's stylesheets on top, and runs it in a frame on the page.
+
+1. In Framer, add a new code file named `GradientCreator` and paste in `framer/GradientCreator.tsx`.
+2. Put the component on a page, for example `/gradient-creator`, and make it fill the page.
+3. Set it up in the right-hand panel:
+   - **Release:** a release tag of this repo, for example `v1.0.0`.
+   - **Design system:** your stylesheet addresses, one per line. They load after the studio's own styles, so their values win.
+   - **Dark mode:** adds the `dark` class, shadcn's switch for dark values.
+   - **Mode switches:** any other `class` or `data-` attributes your design system switches on, for example `data-contrast="high"`.
+4. Publish.
+
+**Styling.** Every colour, radius and font in `styles.css` comes from shadcn / Tailwind names: `--background`, `--foreground`, `--card`, `--secondary`, `--accent`, `--border`, `--input`, `--ring`, `--primary`, `--primary-foreground`, `--popover`, `--muted-foreground`, `--destructive`, `--radius`, `--font-sans` and `--font-mono`, plus four extensions: `--subtle-foreground`, `--highlight`, `--success` and `--warning`. The remaining shades (the stage, hover borders, the primary button's gradient) are worked out from those, so a design system that sets them restyles the whole studio with no bridge. Values must be full colours, like `oklch()`, `hsl()` or hex.
+
+**Updating.** Publish a new release on GitHub (a new tag), then put its tag in **Release**. A release never changes once published, so nothing reaches your page until you choose it.
+
+**gifski on your Mac** works from the Framer page too: the helper trusts `https://bunnyarya.framer.website`.
+
 ## Run it on your Mac
 
 ```bash
@@ -50,11 +69,12 @@ From then on, the online studio shows **Export best GIF (gifski on your Mac)** w
 | `index.html` | The studio: layout and all behaviour |
 | `styles.css` | The whole look. Colours, surfaces and lines are tokens at the top, in `:root` |
 | `start.py` | The one command: gifski setup, local server, browser |
+| `framer/GradientCreator.tsx` | The Framer code component that loads the studio from GitHub |
 | `vendor/` | gifski for the browser (gifski-wasm 2.2.0) |
 | `bin/` | gifski for the Mac, created on the first run and kept out of git |
 | `LICENSE` | AGPL-3.0 |
 
-To restyle, edit `styles.css` and reload the page. The local server switches browser caching off, so every change shows on the next reload.
+To restyle, edit `styles.css` and reload the page, or load a design system that uses the same names (see [Use it in Framer](#use-it-in-framer)). The local server switches browser caching off, so every change shows on the next reload.
 
 ## Exporting
 
