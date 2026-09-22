@@ -47,7 +47,7 @@
 /* Bump on every change. The page compares this with the copy on disk, so a
    browser holding a stale cached version says so instead of silently running
    old code, which is what happened for most of 22 Sep. */
-const APP_VERSION = '2026.09.22-18';
+const APP_VERSION = '2026.09.22-19';
 /* ============================================================
    Gradient GIF Studio
    Self contained. No network, no libraries, no upload.
@@ -1844,7 +1844,7 @@ group($('#left'), 'Colour', body => {
 
   const { row, val } = mkRow(body, 'Background');
   val.remove();
-  const bgWrap = document.createElement('div'); bgWrap.className = 'sw'; bgWrap.style.height = '28px';
+  const bgWrap = document.createElement('div'); bgWrap.className = 'sw bg';
   const bgIn = document.createElement('input'); bgIn.type = 'color';
   bgIn.addEventListener('input', () => { P.bg = bgIn.value; bgWrap.style.background = bgIn.value; invalidate(); });
   bgWrap.appendChild(bgIn); row.appendChild(bgWrap);
