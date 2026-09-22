@@ -6,7 +6,7 @@ Animated gradient loops with glass, dot and halftone effects, exported as light,
 
 **https://shubhamarya-uxnai.github.io/Gradient-Creator/**
 
-Works in any modern browser with nothing to install. Every export is there except *Export best GIF*, which needs the local version below.
+Works in any modern browser with nothing to install. For *Export best GIF*, which uses gifski, connect it to your Mac: see [Use gifski from the online studio](#use-gifski-from-the-online-studio).
 
 ## Run it on your Mac
 
@@ -22,9 +22,19 @@ That one command:
 
 Keep the Terminal window open while you work, and press Ctrl+C to stop. Running the command again while the studio is already running just opens it.
 
-Options: `--port 5601` to use another port, `--no-open` to skip opening the browser.
+Options: `--online` to open the online studio instead of the local copy, `--port 5601` to use another port, `--no-open` to skip opening the browser.
 
 Needs macOS with Python 3. Pillow is optional.
+
+## Use gifski from the online studio
+
+The online studio can use gifski on your own Mac, so the link gives you the lightest GIFs too.
+
+1. On your Mac, run `python3 start.py --online` and keep the window open. It starts the helper and opens the online studio.
+2. In the Export panel, click **Use gifski on this Mac**.
+3. The first time, your browser asks whether the site may reach apps on this device. Allow it.
+
+From then on, the online studio shows **Export best GIF (gifski)** whenever the helper is running. Your frames go from the browser straight to your Mac, and nothing is uploaded. The helper only answers this page and the local copy, and refuses every other website. It looks for the helper on port 5600.
 
 ## Files
 

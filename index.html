@@ -47,7 +47,7 @@
 /* Bump on every change. The page compares this with the copy on disk, so a
    browser holding a stale cached version says so instead of silently running
    old code, which is what happened for most of 22 Sep. */
-const APP_VERSION = '2026.09.22-15';
+const APP_VERSION = '2026.09.22-16';
 /* ============================================================
    Gradient GIF Studio
    Self contained. No network, no libraries, no upload.
@@ -1458,16 +1458,37 @@ async function renderFramesZip(onProg, token){
 }
 
 /* ---------- one click: encode on this Mac with the best installed encoder ---------- */
-let LOCAL = null;   /* engines reported by the studio's local server, null when not served by it */
+/* start.py runs a helper on this Mac. Opened from it, the studio talks to it directly.
+   The hosted copy (GitHub Pages) reaches the same helper at HELPER, but only once the
+   viewer asks: the first request makes the browser ask permission to reach apps on
+   this device, and visitors without the helper should never see that prompt. */
+const HELPER = 'http://localhost:5600';
+const ON_HELPER = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+const API = ON_HELPER ? '' : HELPER;
+let LOCAL = null;   /* engines reported by the helper, null when it is not reachable */
+let HELPER_ASKED = false;
+function helperWanted(){
+  if (HELPER_ASKED) return true;
+  try { return localStorage.getItem('ggs.helper') === '1'; } catch(e){ return false; }
+}
 async function detectLocal(){
-  /* only the local start.py server has encoders; the hosted copy (GitHub Pages) skips the check */
-  if (!/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return null;
+  if (location.protocol === 'file:') return null;
+  if (!ON_HELPER && !helperWanted()) return null;
   try {
-    const r = await fetch('/api/health', { cache: 'no-store' });
+    const r = await fetch(API + '/api/health', { cache: 'no-store' });
     if (!r.ok) return null;
     const j = await r.json();
     return j && j.ok ? j.engines : null;
   } catch(e){ return null; }
+}
+async function connectHelper(){
+  HELPER_ASKED = true;
+  try { localStorage.setItem('ggs.helper', '1'); } catch(e){}
+  LOCAL = await detectLocal();
+  refresh();
+  const e = localEngineName();
+  toast(e ? 'Connected: Export best GIF now uses ' + e + ' on this Mac.'
+          : 'No helper found on this Mac. Run python3 start.py there, keep it open, then try again.');
 }
 function localEngineName(){
   if (!LOCAL) return null;
@@ -1493,7 +1514,9 @@ async function doExportLocal(skipGuard){
     prog(0.55, 'Finding the best quality under ' + fmtBytes(X.targetKB * 1024));
     const target = X.targetKB * 1024;
     const qs = 'fps=' + encodeURIComponent(realFps(X)) + '&quality=' + (X.localQuality | 0) + '&target=' + target + '&engine=auto';
-    const r = await fetch('/api/gif?' + qs, { method: 'POST', body: zip, headers: { 'Content-Type': 'application/zip' } });
+    let r;
+    try { r = await fetch(API + '/api/gif?' + qs, { method: 'POST', body: zip, headers: { 'Content-Type': 'application/zip' } }); }
+    catch(e){ LOCAL = null; refresh(); throw new Error('the helper on this Mac is not running. Start it with python3 start.py and try again.'); }
     if (!r.ok){
       let msg = r.statusText;
       try { msg = (await r.json()).error || msg; } catch(e){}
@@ -2017,6 +2040,16 @@ group($('#right'), 'Export', body => {
   const ls = document.createElement('div'); ls.className = 'mini'; ls.id = 'localStatus';
   local.appendChild(lb); local.appendChild(ls);
   body.appendChild(local);
+  const hc = document.createElement('div'); hc.className = 'stat hidden'; hc.id = 'helperBox';
+  const hb = document.createElement('button'); hb.className = 'btn'; hb.id = 'helperBtn'; hb.textContent = 'Use gifski on this Mac';
+  hb.onclick = () => connectHelper();
+  const hn = document.createElement('div'); hn.className = 'mini';
+  hn.innerHTML = 'Lighter, cleaner GIFs from gifski on your own Mac, nothing uploaded. Needs the free helper running there: <b>python3 start.py</b> ' +
+    '(<a href="https://github.com/shubhamarya-uxnai/Gradient-Creator#use-gifski-from-the-online-studio" target="_blank" rel="noopener">how</a>). ' +
+    'The first time, your browser asks to reach apps on this device: allow it.';
+  hc.appendChild(hb); hc.appendChild(hn);
+  body.appendChild(hc);
+  REFRESH.push(() => hc.classList.toggle('hidden', ON_HELPER || !!localEngineName()));
   addRange(body, X, 'localQuality', 'Max quality', 25, 100, 1, v => String(v), { on: () => save(), showIf: () => !!localEngineName() });
   REFRESH.push(() => {
     const e = localEngineName();
