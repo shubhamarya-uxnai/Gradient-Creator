@@ -356,10 +356,12 @@ def main():
     args = ap.parse_args()
     set_port(args.port)
     url = f'http://localhost:{PORT}/'
+    target = HOSTED_URL if args.online else url
 
     def show():
         if not args.no_open:
-            webbrowser.open(HOSTED_URL if args.online else url)
+            print(f'  Opening {target}', flush=True)
+            webbrowser.open(target)
 
     handler = functools.partial(Handler, directory=ROOT)
     try:
