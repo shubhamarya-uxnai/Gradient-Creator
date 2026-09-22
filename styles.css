@@ -246,3 +246,24 @@ a.btn{color:inherit;text-decoration:none}
 .cmd{display:flex;align-items:center;gap:6px}
 .cmd code{flex:1;min-width:0;overflow-x:auto;white-space:nowrap;font:11px var(--font-mono);color:var(--foreground);
   background:var(--card);border:1px solid var(--border);border-radius:6px;padding:6px 8px}
+
+/* appearance: the settings button in the header, and its overlay */
+.iconbtn{
+  display:flex;align-items:center;justify-content:center;width:28px;height:28px;margin-left:12px;
+  border:1px solid var(--input);background:var(--secondary);border-radius:var(--radius);cursor:pointer;
+  transition:background .12s,border-color .12s;
+}
+.iconbtn:hover{background:var(--accent);border-color:var(--input-hover)}
+.iconbtn svg{width:14px;height:14px;fill:var(--muted-foreground)}
+.iconbtn:hover svg{fill:var(--foreground)}
+.apprdlg{
+  width:min(320px,calc(100vw - 32px));padding:0;color:var(--foreground);
+  background:var(--popover);border:1px solid var(--border);border-radius:var(--radius);
+  box-shadow:0 26px 60px -20px rgba(0,0,0,.7);
+}
+.apprdlg::backdrop{background:rgba(0,0,0,.55)}
+.apprhead{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--border)}
+.apprhead h3{margin:0;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--subtle-foreground)}
+.apprhead .btn{margin-left:auto;padding:5px 12px}
+.apprbody{display:flex;flex-direction:column;gap:11px;padding:14px}
+.apprbody .btn{margin-top:3px}

@@ -69,6 +69,7 @@ JOB_PREFIX = 'gif-studio-job-'
 JOB_LOCK = threading.Lock()
 # Only the studio itself is served, never start.py, bin/ or .git.
 STATIC = {'/': 'index.html', '/index.html': 'index.html', '/styles.css': 'styles.css',
+          '/design-system/tokens.css': 'design-system/tokens.css', '/design-system/shadcn.css': 'design-system/shadcn.css',
           '/vendor/gifski_wasm.js': 'vendor/gifski_wasm.js', '/vendor/gifski_wasm_bg.wasm': 'vendor/gifski_wasm_bg.wasm'}
 OLD_URLS = {'/gradient-gif-studio.html'}   # earlier address, sent on to /
 HOSTED_ORIGIN = 'https://shubhamarya-uxnai.github.io'   # the online studio, on GitHub Pages

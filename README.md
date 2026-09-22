@@ -68,6 +68,7 @@ From then on, the online studio shows **Export best GIF (gifski on your Mac)** w
 | --- | --- |
 | `index.html` | The studio: layout and all behaviour |
 | `styles.css` | The whole look. Colours, surfaces and lines are tokens at the top, in `:root` |
+| `design-system/` | The design system's tokens (`tokens.css`) and the file that maps them onto the names above (`shadcn.css`), copied from its build. They load after `styles.css`, so their values win. The studio stays dark unless the page it sits in picks a theme |
 | `start.py` | The one command: gifski setup, local server, browser |
 | `framer/GradientCreator.tsx` | The Framer code component that loads the studio from GitHub |
 | `vendor/` | gifski for the browser (gifski-wasm 2.2.0) |
