@@ -70,6 +70,9 @@ JOB_LOCK = threading.Lock()
 # Only the studio itself is served, never start.py, bin/ or .git.
 STATIC = {'/': 'index.html', '/index.html': 'index.html', '/styles.css': 'styles.css',
           '/design-system/tokens.css': 'design-system/tokens.css', '/design-system/shadcn.css': 'design-system/shadcn.css',
+          '/type.css': 'type.css',
+          '/fonts/instrument-sans-latin.woff2': 'fonts/instrument-sans-latin.woff2',
+          '/fonts/instrument-sans-latin-ext.woff2': 'fonts/instrument-sans-latin-ext.woff2',
           '/vendor/gifski_wasm.js': 'vendor/gifski_wasm.js', '/vendor/gifski_wasm_bg.wasm': 'vendor/gifski_wasm_bg.wasm'}
 OLD_URLS = {'/gradient-gif-studio.html'}   # earlier address, sent on to /
 HOSTED_ORIGIN = 'https://shubhamarya-uxnai.github.io'   # the online studio, on GitHub Pages
@@ -247,7 +250,8 @@ def new_job_dir():
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
-                      '.wasm': 'application/wasm', '.js': 'text/javascript'}
+                      '.wasm': 'application/wasm', '.js': 'text/javascript',
+                      '.woff2': 'font/woff2'}
 
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store, must-revalidate')

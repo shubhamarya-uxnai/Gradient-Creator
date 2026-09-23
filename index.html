@@ -9,6 +9,7 @@
 <!-- The design system's tokens, copied from its build. shadcn.css maps them onto the names styles.css reads. -->
 <link rel="stylesheet" href="design-system/tokens.css">
 <link rel="stylesheet" href="design-system/shadcn.css">
+<link rel="stylesheet" href="type.css">
 <style>
 /* The studio is dark unless the page it sits in picks a theme (data-theme, or the dark or light class). */
 :root:not([data-theme]):not(.dark):not(.light){--ds-when-light:var(--ds-off);--ds-when-dark:var(--ds-on)}
@@ -26,7 +27,7 @@ try {
 <body>
 <div class="app">
   <header>
-    <h1 class="brand"><span class="dot"></span>Gradient GIF Studio<span class="sr-only">, an animated gradient GIF maker</span> <small id="ver"></small></h1>
+    <h1 class="brand"><span class="dot"></span>Gradient Studio <small id="ver"></small></h1>
     <div class="spacer"></div>
     <div class="hkeys"><kbd>R</kbd> randomise &nbsp; <kbd>Space</kbd> play &nbsp; <kbd>E</kbd> export</div>
     <button class="iconbtn" id="apprBtn" title="Settings" aria-label="Settings" aria-haspopup="dialog">
@@ -67,7 +68,7 @@ try {
 /* Bump on every change. The page compares this with the copy on disk, so a
    browser holding a stale cached version says so instead of silently running
    old code, which is what happened for most of 22 Sep. */
-const APP_VERSION = '2026.09.23-34';
+const APP_VERSION = '2026.09.23-44';
 /* ============================================================
    Gradient GIF Studio
    Self contained. No network, no libraries, no upload.
@@ -1870,11 +1871,12 @@ group($('#right'), 'About and gifski', body => {
   const line = html => { const d = document.createElement('div'); d.className = 'mini'; d.innerHTML = html; body.appendChild(d); };
   const head = text => { const d = document.createElement('div'); d.className = 'subhead'; d.textContent = text; body.appendChild(d); };
 
-  line('Gradient GIF Studio is an animated gradient GIF maker built by Shubham Arya Singh. It turns a handful of controls, ' +
-       'shape, colour and loop length, into a seamless looping GIF, then exports it with gifski, the encoder that gives the ' +
-       'smallest file at the best quality. Everything happens in the browser: each frame is drawn and encoded on the device, ' +
-       'and nothing is uploaded. The studio is free and open source, and it is styled by his own design system, so its colours, ' +
-       'type and spacing come from the same tokens he uses in Figma.');
+  line('An animated gradient GIF maker for hero banners, slides and posts. Pick a shape, a palette and a loop length, ' +
+       'then export a seamless loop, made entirely on your own device.');
+  line('Gradient Studio is built by Shubham Arya Singh. It exports with gifski, the encoder that gives the smallest file ' +
+       'at the best quality, and every frame is drawn and encoded on the device, so nothing is uploaded. The studio is free ' +
+       'and open source, and it is styled by his own design system, so its colours, type and spacing come from the same ' +
+       'tokens he uses in Figma.');
 
   head('gifski on your Mac');
   line('gifski makes the smallest file at the best quality, and it runs on your own Mac through a small helper. ' +
@@ -1895,7 +1897,8 @@ group($('#right'), 'About and gifski', body => {
 
   head('Credits and licence');
   line('GIFs are made by <b>gifski</b> by Kornel Lesiński (gif.ski). In the browser it runs as gifski-wasm by jamsinclair. ' +
-       'The icons are <b>Phosphor</b> by Tobias Fried, used under the MIT licence: ' +
+       'The text is set in <b>Instrument Sans</b> by the Instrument Sans project authors, under the SIL Open Font Licence, ' +
+       'with headings in Georgia. The icons are <b>Phosphor</b> by Tobias Fried, used under the MIT licence: ' +
        '<a href="https://github.com/phosphor-icons/core" target="_blank" rel="noopener">phosphor-icons/core</a>. ' +
        'This studio is open source under the AGPL-3.0 licence: <a href="' + REPO + '" target="_blank" rel="noopener">source on GitHub</a>.');
 }, true);
@@ -2119,10 +2122,35 @@ function randomiseAll(){
   invalidate(); refresh();
 }
 
+/* A shortcut must not fire while someone is typing, but a slider and a colour
+   well are <input> too, and this panel is almost nothing but sliders and
+   dropdowns: blocking every one of them meant the shortcuts died the moment you
+   touched a control, which is what they did. Block only what takes characters. */
+function typingInto(el){
+  if (!el || el.isContentEditable) return !!el;
+  if (el.tagName === 'TEXTAREA') return true;
+  if (el.tagName !== 'INPUT') return false;
+  return !/^(range|color|checkbox|radio|button|submit|reset|file)$/i.test(el.type);
+}
+/* A dropdown keeps focus after a click, and a focused dropdown owns the letter
+   keys, so every menu choice left the shortcuts dead. Release it when the choice
+   was made with the pointer. A choice made from the keyboard keeps focus, so
+   arrowing and letter jumping through options still work. */
+let pickedByPointer = false;
+document.addEventListener('pointerdown', e => { pickedByPointer = e.target.tagName === 'SELECT'; }, true);
+document.addEventListener('change', e => {
+  if (e.target.tagName === 'SELECT' && pickedByPointer) e.target.blur();
+  pickedByPointer = false;
+});
+
 document.addEventListener('keydown', e => {
-  if (/input|select|textarea/i.test(e.target.tagName)) return;
+  if (typingInto(e.target)) return;
   if (document.querySelector('dialog[open]')) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
+  /* a dropdown owns its own letter jumping and its own Space */
+  if (e.target.tagName === 'SELECT') return;
+  /* Space on a focused button belongs to that button, not to playback */
+  if (e.code === 'Space' && e.target.tagName === 'BUTTON') return;
   if (e.code === 'Space'){ e.preventDefault(); togglePlay(); }
   else if (e.key === 'r' || e.key === 'R'){
     if (e.shiftKey) randomiseAll();
@@ -2155,56 +2183,41 @@ function apprApply(){
   try { localStorage.setItem('ggs.appearance', JSON.stringify(APPR_STATE)); } catch(e){}
 }
 
-/* Every release, newest first. Add a row here on every push, and nothing else:
-   the newest row that is not `soon` is given the Live tag on its own, so the
-   log stays right without a second place to remember. The first row is what is
-   being built next, so it carries Coming soon instead. */
+/* Every release, newest first. Add a row on every push, and nothing else: the
+   newest row that is not `soon` is given the Live tag on its own. The first row
+   is what is being built next, so it carries Coming soon instead.
+   This log is read by anyone who opens the studio, so each note is written for
+   them: two lines, plain language, what they get rather than what changed. */
 const UPDATES = [
   {
     version: 'Next', soon: true,
-    title: 'Turn a photo into a gradient',
-    notes: [
-      'Drop in a photo and the studio reads the colours out of it, then builds a moving gradient from them.',
-      'Three depths to choose from: the colours alone, the colours placed where they sit in the picture, or the picture itself as the base with the gradient moving over it.',
-      'Everything stays on the device, like every other part of the studio. The photo is never uploaded.',
-    ],
+    title: 'Turn any photo into a gradient',
+    note: 'Drop in a photo and watch its colours lift off the page into a gradient that moves and loops forever.',
+  },
+  {
+    version: 'v1.3.0', date: '23 September 2026',
+    title: 'A new look, and keys that work',
+    note: 'Fresh type throughout, a roomier settings panel, and shortcuts that keep working after you touch a control.',
   },
   {
     version: 'v1.2.1', date: '23 September 2026',
-    title: 'A working link out to the release history',
-    notes: [
-      'The link at the foot of this log pointed at a page that was empty. It now opens the list of releases.',
-    ],
+    title: 'A tidier way out',
+    note: 'The link at the foot of this log now lands where it should, on the full history of every release.',
   },
   {
     version: 'v1.2.0', date: '23 September 2026',
-    title: 'A settings panel, this log, and one icon family',
-    notes: [
-      'Settings opens as an overlay with two tabs: Appearance for the design system switches, Updates for this log.',
-      'Every icon is now Phosphor, at one weight, copied into the page so it draws with no network.',
-      'Helper and warning text is gone from the panels. What it said now lives in About and gifski, closed, at the foot of the right column.',
-      'The heading names the studio for search engines and screen readers without changing what is on screen.',
-    ],
+    title: 'Settings, and a whole new set of icons',
+    note: 'One gear now holds how the studio looks and what is new, and every icon has been redrawn from a single family.',
   },
   {
     version: 'v1.1.0', date: '22 September 2026',
-    title: 'The design system takes over the colours',
-    notes: [
-      'Colour, type, spacing and radius come from the design system built out of Figma, so the studio and the rest of the site agree.',
-      'An appearance overlay exposes its switches: theme, contrast, colour temperature, text size and screen size.',
-      'The chosen look is remembered and restored before the page paints, so it never flashes the old one.',
-      'Every text and surface pair clears its contrast target in all of those combinations.',
-    ],
+    title: 'Make it yours',
+    note: 'Switch the theme, the contrast, the warmth and the text size, and the studio follows without ever losing clarity.',
   },
   {
     version: 'v1.0.0', date: '22 September 2026',
-    title: 'The studio goes live, and onto Framer',
-    notes: [
-      'Published on GitHub Pages, and on the Framer site through a code component that loads a pinned release.',
-      'gifski does the encoding, either in the browser or through the helper on this Mac, which gives the smallest file.',
-      'The Estimate panel works out size and time from a sample of the loop before the full export runs.',
-      'Frames are drawn and encoded on the device. Nothing is uploaded.',
-    ],
+    title: 'Gradient GIF Studio opens its doors',
+    note: 'Seamless looping gradients, exported by gifski at its smallest, and made entirely on your own device.',
   },
 ];
 
@@ -2250,9 +2263,8 @@ function settingsUpdates(body){
 
     const t = document.createElement('div'); t.className = 'updttl'; t.textContent = u.title;
     li.appendChild(t);
-    const notes = document.createElement('ul'); notes.className = 'updnotes';
-    u.notes.forEach(n => { const x = document.createElement('li'); x.textContent = n; notes.appendChild(x); });
-    li.appendChild(notes);
+    const note = document.createElement('div'); note.className = 'updnote'; note.textContent = u.note;
+    li.appendChild(note);
     list.appendChild(li);
   });
   body.appendChild(list);

@@ -21,6 +21,8 @@ The studio can live on a Framer page while everything still comes from this repo
    - **Mode switches:** any other `class` or `data-` attributes your design system switches on, for example `data-contrast="high"`.
 4. Publish.
 
+**Type.** Sizes are not written into `styles.css` any more. Each one is a token in `type.css` pointing at `--ds-font-size-*` in the design system, which is the layer the Text size switch drives, so Appearance > Text size moves the whole interface from 1x to 2x. The design system's `body` / `label` / `heading` roles sit on the same scale but start at 11px, and a dense tool panel needs 10, 12 and 13 as well, so the raw steps are used directly. Weights use the system's 400 and 500; it has no 600, so the six places set in 600 stay literal until Figma has one.
+
 **Styling.** Every colour, radius and font in `styles.css` comes from shadcn / Tailwind names: `--background`, `--foreground`, `--card`, `--secondary`, `--accent`, `--border`, `--input`, `--ring`, `--primary`, `--primary-foreground`, `--popover`, `--muted-foreground`, `--destructive`, `--radius`, `--font-sans` and `--font-mono`, plus four extensions: `--subtle-foreground`, `--highlight`, `--success` and `--warning`. The remaining shades (the stage, hover borders, the primary button's gradient) are worked out from those, so a design system that sets them restyles the whole studio with no bridge. Values must be full colours, like `oklch()`, `hsl()` or hex.
 
 **Updating.** Publish a new release on GitHub (a new tag), then put its tag in **Release**. A release never changes once published, so nothing reaches your page until you choose it.
@@ -68,6 +70,8 @@ From then on, the online studio shows **Export best GIF (gifski on your Mac)** w
 | --- | --- |
 | `index.html` | The studio: layout and all behaviour |
 | `styles.css` | The whole look. Colours, surfaces and lines are tokens at the top, in `:root` |
+| `type.css` | Type for the studio. Loads after the design system so it wins: the two families, and a size scale pointing at `--ds-font-size-*`, the layer the Text size switch lives on |
+| `fonts/` | Instrument Sans, one variable file per subset, self-hosted so the studio still has its type with no network. SIL Open Font Licence, text in `fonts/OFL.txt` |
 | `design-system/` | The design system's tokens (`tokens.css`) and the file that maps them onto the names above (`shadcn.css`), copied from its build. They load after `styles.css`, so their values win. The studio stays dark unless the page it sits in picks a theme |
 | `start.py` | The one command: gifski setup, local server, browser |
 | `framer/GradientCreator.tsx` | The Framer code component that loads the studio from GitHub |
@@ -105,5 +109,6 @@ What makes a GIF lighter:
 
 - The server listens on 127.0.0.1 only and serves nothing but the studio's own files.
 - Gradient Creator is open source under the AGPL-3.0 licence (see `LICENSE`), because it ships gifski's browser build.
+- The text is set in Instrument Sans by the Instrument Sans project authors, under the SIL Open Font Licence, with headings in Georgia. The font files are copied into `fonts/` rather than loaded from Google, so nothing about a visitor reaches a third party.
 - The icons are Phosphor by Tobias Fried, regular weight, used under the MIT licence. They are copied into `index.html` as path data rather than loaded from a CDN, so they still draw with no network.
 - gifski is made by Kornel Lesiński (gif.ski) and licensed AGPL-3.0. The Mac version is fetched from its official release on the first run, not stored in this repository. The browser version in `vendor/` is gifski-wasm by jamsinclair, also AGPL-3.0.

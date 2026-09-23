@@ -1,0 +1,54 @@
+/* Type for the studio, on the design system's own scale.
+ *
+ * Loaded AFTER design-system/*.css so these win. Nothing in design-system/ is
+ * edited here: that folder is a copy of the build and is replaced wholesale
+ * whenever the system is rebuilt.
+ *
+ * Sizes point at --ds-font-size-*, the raw step scale, because that is the layer
+ * the Text size switch lives on: --ds-raw-font-size-N carries 1x through 2x, and
+ * --ds-font-size-N passes it through. The body/label/heading roles sit on top of
+ * the same scale but start at 11px and climb in content-sized steps, and a dense
+ * tool panel needs 10, 12 and 13 as well. Same source of truth, finer steps.
+ *
+ * Every size the studio had is here, rounded to its nearest step (at most half a
+ * pixel, always upward on a tie).
+ */
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-weight: 400 700;                              /* one variable file covers the range */
+  font-display: swap;
+  src: url(fonts/instrument-sans-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url(fonts/instrument-sans-latin-ext.woff2) format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* The same selector list the design system re-declares on, so these hold in
+   every switch combination instead of being lost the moment one is set. */
+:root, :host, [data-theme], .dark, .light, [data-contrast], [data-temperature], [data-text-scale], [data-screen], [lang] {
+  /* families: titles are set in Georgia, everything else in Instrument Sans */
+  --font-display: Georgia, "Times New Roman", Times, serif;
+  --font-sans: "Instrument Sans", ui-sans-serif, -apple-system, system-ui, sans-serif;
+
+  /* sizes, every one following the Text size switch */
+  --text-2xs: var(--ds-font-size-10);       /* the uppercase pill on an update */
+  --text-xs: var(--ds-font-size-11);        /* panel headings, captions, fine print */
+  --text-sm: var(--ds-font-size-12);        /* control labels, small buttons, readouts */
+  --text-md: var(--ds-font-size-13);        /* the size the studio is set in */
+  --text-lg: var(--ds-font-size-14);        /* the line under the title */
+  --text-xl: var(--ds-font-size-16);        /* the line over the progress bar */
+  --text-title: var(--ds-font-size-24);     /* the studio's name */
+  --text-display: var(--ds-font-size-28);   /* the estimated file size */
+
+  /* weights. The system offers 300, 400, 500 and 700; it has no 600, so the
+     six places set in 600 stay literal until a 600 exists in Figma. */
+  --weight-regular: var(--ds-text-body-weight-default);
+  --weight-medium: var(--ds-text-body-weight-medium);
+}
