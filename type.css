@@ -33,7 +33,14 @@
 /* The same selector list the design system re-declares on, so these hold in
    every switch combination instead of being lost the moment one is set. */
 :root, :host, [data-theme], .dark, .light, [data-contrast], [data-temperature], [data-text-scale], [data-screen], [lang] {
-  /* families: titles are set in Georgia, everything else in Instrument Sans */
+  /* families: titles are set in Georgia, everything else in Instrument Sans.
+     The two raw family slots are set as well as the studio's own names, because
+     the component tokens carry their own family: a .ds-button reads
+     --ds-buttons-*-typography-font-family, which resolves through
+     --ds-font-family-secondary. Without this an adopted component would render
+     in Inter while everything around it stayed Instrument Sans. */
+  --ds-font-family-primary: Georgia, "Times New Roman", Times, serif;
+  --ds-font-family-secondary: "Instrument Sans", ui-sans-serif, -apple-system, system-ui, sans-serif;
   --font-display: Georgia, "Times New Roman", Times, serif;
   --font-sans: "Instrument Sans", ui-sans-serif, -apple-system, system-ui, sans-serif;
 

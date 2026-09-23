@@ -70,6 +70,7 @@ JOB_LOCK = threading.Lock()
 # Only the studio itself is served, never start.py, bin/ or .git.
 STATIC = {'/': 'index.html', '/index.html': 'index.html', '/styles.css': 'styles.css',
           '/design-system/tokens.css': 'design-system/tokens.css', '/design-system/shadcn.css': 'design-system/shadcn.css',
+          '/design-system/components.css': 'design-system/components.css',
           '/type.css': 'type.css',
           '/fonts/instrument-sans-latin.woff2': 'fonts/instrument-sans-latin.woff2',
           '/fonts/instrument-sans-latin-ext.woff2': 'fonts/instrument-sans-latin-ext.woff2',

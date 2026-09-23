@@ -90,12 +90,7 @@ canvas#preview{
   flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:10px 18px 14px;
   border-top:1px solid var(--border);background:var(--transport);
 }
-.transport .tbtn{
-  width:32px;height:32px;border-radius:8px;border:1px solid var(--input);background:var(--secondary);
-  display:grid;place-items:center;cursor:pointer;flex:0 0 auto;
-}
-.transport .tbtn:hover{border-color:var(--input-hover)}
-.transport .tbtn svg{width:13px;height:13px;fill:var(--foreground)}
+.transport .ds-icon-button{flex:0 0 auto}
 .scrub{flex:1;min-width:0}
 .tmeta{font:var(--text-sm) var(--font-mono);color:var(--muted-foreground);white-space:nowrap;flex:0 0 auto}
 
@@ -137,18 +132,22 @@ select:focus,input[type=text]:focus,input[type=number]:focus{border-color:var(--
 select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--muted-foreground) 50%),linear-gradient(135deg,var(--muted-foreground) 50%,transparent 50%);
   background-position:calc(100% - 15px) 14px,calc(100% - 10px) 14px;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:28px;cursor:pointer}
 
-.btn{
-  border:1px solid var(--input);background:var(--secondary);border-radius:var(--radius);
-  padding:8px 11px;cursor:pointer;text-align:center;transition:background .12s,border-color .12s;
-  display:flex;align-items:center;justify-content:center;gap:7px;white-space:nowrap;
-}
-.btn:hover{background:var(--accent);border-color:var(--input-hover)}
-.btn:active{transform:translateY(1px)}
-.btn.primary{background:linear-gradient(180deg,var(--primary),var(--primary-deep));border-color:var(--primary-edge);color:var(--primary-foreground);font-weight:600;box-shadow:0 4px 16px -6px color-mix(in srgb,var(--primary) 80%,transparent)}
-.btn.primary:hover{background:linear-gradient(180deg,var(--primary-hover),var(--primary-deep-hover))}
-.btn.ghost{background:transparent}
-.btn[disabled]{opacity:.45;pointer-events:none}
-.btn.sm{padding:6px 9px;font-size:var(--text-sm)}
+/* Buttons come from the design system now. What is left here is what the
+   component does not cover. */
+.ds-button{text-align:center;white-space:nowrap;transition:background-color .12s,border-color .12s}
+.ds-button:active{transform:translateY(1px)}
+/* A panel button has to fill its column, and a long export label has to wrap
+   rather than overflow, so the component's inline-flex is widened here. */
+#left .ds-button,#right .ds-button,.apprbody .ds-button{display:flex;width:100%;white-space:normal}
+/* His neutral ghost carries a border COLOUR but a border WIDTH of 0, so an
+   outline button drawn from it has no edge at all on a card. The width is set
+   to 1px until that token exists in Figma; the colour stays his. */
+/* [data-size] is carried only to outweigh components.css, which sets the same
+   two attributes and loads after this file, so an equal rule here never wins. */
+.ds-button[data-type="neutral"][data-fill="off"][data-size],
+.ds-icon-button[data-type="neutral"][data-fill="off"][data-size]{border-width:1px}
+/* No disabled state exists for .ds-button yet (D6), so it is drawn here. */
+.ds-button[disabled]{opacity:.45;pointer-events:none}
 .btnrow{display:flex;gap:7px}
 .btnrow > *{flex:1;min-width:0}
 
@@ -244,21 +243,23 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,va
 }
 
 /* helper download, shown on the online copy only */
-a.btn{color:inherit;text-decoration:none}
+a.ds-button{text-decoration:none}
 .mini a{color:var(--muted-foreground);text-decoration:underline}
 .cmd{display:flex;align-items:center;gap:6px}
 .cmd code{flex:1;min-width:0;overflow-x:auto;white-space:nowrap;font:var(--text-xs) var(--font-mono);color:var(--foreground);
   background:var(--card);border:1px solid var(--border);border-radius:6px;padding:6px 8px}
 
 /* appearance: the settings button in the header, and its overlay */
-.iconbtn{
-  display:flex;align-items:center;justify-content:center;width:28px;height:28px;margin-left:12px;
-  border:1px solid var(--input);background:var(--secondary);border-radius:var(--radius);cursor:pointer;
-  transition:background .12s,border-color .12s;
+header .ds-icon-button{margin-left:12px}
+/* components.css draws a focus ring for .ds-button but not for .ds-icon-button,
+   so it is drawn here, the way D9 describes it: a plain outline, offset so its
+   outer edge lands 4px out, and NO radius swap. An outline follows the corner
+   it is offset from, which was measured: radius 12 + offset 3 + width 1 gives an
+   outer radius of 16.1 against Figma's 16. */
+.ds-icon-button:focus-visible{
+  outline:var(--ds-button-primary-ghost-border-width,1px) solid var(--ds-color-button-primary-ghost-border,var(--ring));
+  outline-offset:calc(4px - var(--ds-button-primary-ghost-border-width,1px));
 }
-.iconbtn:hover{background:var(--accent);border-color:var(--input-hover)}
-.iconbtn svg{width:14px;height:14px;fill:var(--muted-foreground)}
-.iconbtn:hover svg{fill:var(--foreground)}
 .apprdlg{
   width:min(320px,calc(100vw - 32px));padding:0;color:var(--foreground);
   background:var(--popover);border:1px solid var(--border);border-radius:var(--radius);
@@ -276,8 +277,7 @@ a.btn{color:inherit;text-decoration:none}
 
 /* ---------- icons: Phosphor, one weight, sized by whatever holds them ---------- */
 .ph{width:1em;height:1em;display:block;flex:none;fill:currentColor}
-.btn .ph,a.btn .ph{width:14px;height:14px;opacity:.8}
-.btn.sm .ph,a.btn.sm .ph{width:13px;height:13px}
+/* icon size inside a button comes from the component's own token */
 .grp > h3 .chev{width:13px;height:13px;fill:currentColor}
 .pcard .del .ph{width:11px;height:11px;fill:currentColor}
 
@@ -298,7 +298,7 @@ a.btn{color:inherit;text-decoration:none}
 .tab .ph{width:14px;height:14px}
 .tab:hover{color:var(--muted-foreground)}
 .tab.on{color:var(--foreground);border-bottom-color:var(--primary)}
-.apprhead .iconbtn.close{width:26px;height:26px;margin:auto 0 auto 10px}
+.apprhead .apprclose{margin:auto 0 auto 10px}
 .apprbody[hidden]{display:none}
 .apprbody{flex:1 1 auto;min-height:0;overflow:auto}
 
