@@ -77,6 +77,15 @@ From then on, the online studio shows **Export best GIF (gifski on your Mac)** w
 
 To restyle, edit `styles.css` and reload the page, or load a design system that uses the same names (see [Use it in Framer](#use-it-in-framer)). The local server switches browser caching off, so every change shows on the next reload.
 
+## Settings
+
+The gear at the top right opens a panel with two tabs.
+
+- **Appearance** holds the design system's switches: theme, contrast, colour temperature, text size and screen size. The choice is remembered and restored before the page paints, so it never flashes the old look.
+- **Updates** is the release log. The newest release carries a **Live** tag, worked out on its own from the list, and the row above it is what is being built next, tagged **Coming soon**.
+
+**Add a row on every push.** The log is the `UPDATES` array in `index.html`, newest first. Nothing else needs changing: whichever row is newest and not marked `soon` gets the Live tag.
+
 ## Exporting
 
 Every export aims for the smallest file at top quality. There is no size target to set.
@@ -96,4 +105,5 @@ What makes a GIF lighter:
 
 - The server listens on 127.0.0.1 only and serves nothing but the studio's own files.
 - Gradient Creator is open source under the AGPL-3.0 licence (see `LICENSE`), because it ships gifski's browser build.
+- The icons are Phosphor by Tobias Fried, regular weight, used under the MIT licence. They are copied into `index.html` as path data rather than loaded from a CDN, so they still draw with no network.
 - gifski is made by Kornel Lesiński (gif.ski) and licensed AGPL-3.0. The Mac version is fetched from its official release on the first run, not stored in this repository. The browser version in `vendor/` is gifski-wasm by jamsinclair, also AGPL-3.0.
