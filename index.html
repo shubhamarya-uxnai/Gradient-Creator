@@ -6,18 +6,19 @@
 <title>Animated gradient GIF maker | Gradient GIF Studio</title>
 <meta name="description" content="Gradient GIF Studio is an animated gradient GIF maker built by Shubham Arya Singh. It makes seamless looping gradients, exports with gifski, and uploads nothing.">
 <link rel="stylesheet" href="styles.css">
-<!-- Shared BA Design System v0.1.0. -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/shubhamarya-uxnai/BA-Design-Sytem@v0.1.0/dist/consumer.css" data-ba-version="0.1.0">
+<!-- Shared BA Design System v0.1.1 with corrected text colors, typography, and Material icons. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/shubhamarya-uxnai/BA-Design-Sytem@v0.1.1/dist/consumer.css" data-ba-version="0.1.1">
 <link rel="stylesheet" href="type.css">
 <script>
 /* Appearance, restored before the page paints so the chosen look never flashes. */
 try {
   const saved = JSON.parse(localStorage.getItem('ggs.appearance') || '{}');
   ['data-theme', 'data-contrast', 'data-temperature', 'data-text-scale', 'data-screen'].forEach(a => {
-    const v = saved[a]; if (typeof v === 'string' && /^[a-z0-9.]+$/.test(v)) document.documentElement.setAttribute(a, v);
+    const v = saved[a]; if (typeof v === 'string' && /^[a-z0-9.]+$/.test(v)) document.documentElement.setAttribute(a, a === 'data-text-scale' && v !== '1' && !String(v).endsWith('x') ? v + 'x' : v);
   });
 } catch(e){}
 </script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Material+Symbols+Rounded&display=swap">
 </head>
 <body>
 <div class="app">
@@ -99,7 +100,8 @@ const ICONS = {
 };
 /* currentColor, so the colour comes from whatever the icon sits in, and
    aria-hidden, because each one sits beside a label or a spoken name. */
-const iconSvg = n => '<svg class="ph" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="' + (ICONS[n] || '') + '"/></svg>';
+const MATERIAL_ICONS = {"upload-simple":"upload","sparkle":"auto_awesome","x":"close","plus":"add","caret-down":"expand_more","caret-up":"expand_less","caret-left":"chevron_left","caret-right":"chevron_right","gear":"settings","play":"play_arrow","pause":"pause","trash":"delete","download-simple":"download","check-circle":"check_circle","clock":"schedule","arrow-counter-clockwise":"restart_alt","arrows-clockwise":"sync","arrow-clockwise":"refresh","copy":"content_copy","question":"help","dots-three":"more_horiz"};
+const iconSvg = name => '<span class="material-symbols-rounded ph" aria-hidden="true">' + (MATERIAL_ICONS[name] || (Object.hasOwn(ICONS,name) ? name.replaceAll('-', '_') : 'help')) + '</span>';
 function icon(n){
   const d = document.createElement('div');
   d.innerHTML = iconSvg(n);
@@ -2199,7 +2201,7 @@ function apprApply(){
    This log is read by anyone who opens the studio, so each note is written for
    them: two lines, plain language, what they get rather than what changed. */
 const UPDATES = [
-  { version: 'v1.5.0', date: '20 October 2026', title: 'Shared BA Design System', note: 'The studio now inherits its shared styles from BA Design System v0.1.0.' },
+  { version: 'v1.5.1', date: '20 October 2026', title: 'Shared BA Design System', note: 'The studio now inherits its shared styles from BA Design System v0.1.0.' },
   {
     version: 'Next', soon: true,
     title: 'Turn any photo into a gradient',
