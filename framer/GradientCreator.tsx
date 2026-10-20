@@ -159,15 +159,15 @@ addPropertyControls(GradientCreator, {
     release: {
         type: ControlType.String,
         title: "Release",
-        defaultValue: "v1.5.2",
+        defaultValue: "v1.6.0",
         placeholder: "v1.0.0",
         description: "A release tag on GitHub. Publish a new release there, then change this.",
     },
     designSystem: {
         type: ControlType.String,
         title: "Design system",
-        defaultValue: "https://cdn.jsdelivr.net/gh/shubhamarya-uxnai/BA-Design-Sytem@v0.1.2/dist/consumer.css",
-        placeholder: "https://cdn.jsdelivr.net/gh/shubhamarya-uxnai/BA-Design-Sytem@v0.1.2/dist/consumer.css",
+        defaultValue: "https://cdn.jsdelivr.net/gh/shubhamarya-uxnai/BA-Design-Sytem@v0.2.0/dist/consumer.css",
+        placeholder: "https://cdn.jsdelivr.net/gh/shubhamarya-uxnai/BA-Design-Sytem@v0.2.0/dist/consumer.css",
         displayTextArea: true,
         description: "Stylesheet addresses, one per line. They load after the studio's own styles.",
     },
