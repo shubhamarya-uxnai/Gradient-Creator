@@ -70,6 +70,7 @@ function rootAttributes(dark: boolean, switches: string): string {
         else if (name.startsWith("data-")) data.push(name + '="' + esc(m[2]) + '"')
     }
     const attrs = classes.length ? ['class="' + esc(classes.join(" ")) + '"'] : []
+    if (!data.some((a) => a.startsWith('data-theme='))) data.push('data-theme="' + (dark ? 'dark' : 'light') + '"')
     return attrs.concat(data).join(" ")
 }
 
@@ -83,7 +84,7 @@ function framePage(html: string, base: string, designSystem: string, dark: boole
     return html
         .replace(/<head>/i, '<head><base href="' + esc(base) + '">')
         .replace(/<\/head>/i, stylesheetLinks(designSystem) + "</head>")
-        .replace(/<html([^>]*)>/i, (_all, rest) => "<html" + rest + (attrs ? " " + attrs : "") + ">")
+        .replace(/<html([^>]*)>/i, (_all, rest) => "<html" + rest.replace(/\sdata-theme="[^"]*"/i, '') + (attrs ? " " + attrs : "") + ">")
 }
 
 // ---- end loader ----
@@ -158,15 +159,15 @@ addPropertyControls(GradientCreator, {
     release: {
         type: ControlType.String,
         title: "Release",
-        defaultValue: "v1.0.0",
+        defaultValue: "v1.5.0",
         placeholder: "v1.0.0",
         description: "A release tag on GitHub. Publish a new release there, then change this.",
     },
     designSystem: {
         type: ControlType.String,
         title: "Design system",
-        defaultValue: "",
-        placeholder: "https://cdn.jsdelivr.net/gh/you/design-system@v1.0.0/dist/tokens.css",
+        defaultValue: "https://cdn.jsdelivr.net/gh/shubhamarya-uxnai/BA-Design-Sytem@v0.1.0/dist/consumer.css",
+        placeholder: "https://cdn.jsdelivr.net/gh/shubhamarya-uxnai/BA-Design-Sytem@v0.1.0/dist/consumer.css",
         displayTextArea: true,
         description: "Stylesheet addresses, one per line. They load after the studio's own styles.",
     },

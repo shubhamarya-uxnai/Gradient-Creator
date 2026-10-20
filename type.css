@@ -39,10 +39,10 @@
      --ds-buttons-*-typography-font-family, which resolves through
      --ds-font-family-secondary. Without this an adopted component would render
      in Inter while everything around it stayed Instrument Sans. */
-  --ds-font-family-primary: Georgia, "Times New Roman", Times, serif;
-  --ds-font-family-secondary: "Instrument Sans", ui-sans-serif, -apple-system, system-ui, sans-serif;
-  --font-display: Georgia, "Times New Roman", Times, serif;
-  --font-sans: "Instrument Sans", ui-sans-serif, -apple-system, system-ui, sans-serif;
+  --ds-font-family-primary: var(--va-typography-font-family-title), serif;
+  --ds-font-family-secondary: var(--va-typography-font-family-body), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--va-typography-font-family-title), serif;
+  --font-sans: var(--va-typography-font-family-body), ui-sans-serif, system-ui, sans-serif;
 
   /* sizes, every one following the Text size switch */
   --text-2xs: var(--ds-font-size-10);       /* the uppercase pill on an update */

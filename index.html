@@ -1,20 +1,14 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Animated gradient GIF maker | Gradient GIF Studio</title>
 <meta name="description" content="Gradient GIF Studio is an animated gradient GIF maker built by Shubham Arya Singh. It makes seamless looping gradients, exports with gifski, and uploads nothing.">
 <link rel="stylesheet" href="styles.css">
-<!-- The design system's tokens, copied from its build. shadcn.css maps them onto the names styles.css reads. -->
-<link rel="stylesheet" href="design-system/tokens.css">
-<link rel="stylesheet" href="design-system/components.css">
-<link rel="stylesheet" href="design-system/shadcn.css">
+<!-- Shared BA Design System v0.1.0. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/shubhamarya-uxnai/BA-Design-Sytem@v0.1.0/dist/consumer.css" data-ba-version="0.1.0">
 <link rel="stylesheet" href="type.css">
-<style>
-/* The studio is dark unless the page it sits in picks a theme (data-theme, or the dark or light class). */
-:root:not([data-theme]):not(.dark):not(.light){--ds-when-light:var(--ds-off);--ds-when-dark:var(--ds-on)}
-</style>
 <script>
 /* Appearance, restored before the page paints so the chosen look never flashes. */
 try {
@@ -2183,15 +2177,16 @@ const APPR = [
   { attr: 'data-temperature', label: 'Colour temperature', def: 'cool',
     options: [['cool', 'Cool'], ['warm', 'Warm']] },
   { attr: 'data-text-scale', label: 'Text size', def: '1',
-    options: [['1', '1x'], ['1.2', '1.2x'], ['1.4', '1.4x'], ['1.6', '1.6x'], ['1.8', '1.8x'], ['2', '2x']] },
+    options: [['1', '1x'], ['1.2x', '1.2x'], ['1.4x', '1.4x'], ['1.6x', '1.6x'], ['1.8x', '1.8x'], ['2x', '2x']] },
   { attr: 'data-screen', label: 'Screen size', def: '',
     options: [['', 'Automatic'], ['mobile', 'Mobile'], ['tablet', 'Tablet'], ['desktop', 'Desktop']] },
 ];
 let APPR_STATE = (() => { try { return JSON.parse(localStorage.getItem('ggs.appearance') || '{}') || {}; } catch(e){ return {}; } })();
 
 function apprApply(){
+  if (APPR_STATE['data-text-scale'] && APPR_STATE['data-text-scale'] !== '1' && !APPR_STATE['data-text-scale'].endsWith('x')) APPR_STATE['data-text-scale'] += 'x';
   APPR.forEach(s => {
-    const v = APPR_STATE[s.attr];
+    const v = APPR_STATE[s.attr] ?? s.def;
     if (v) document.documentElement.setAttribute(s.attr, v);
     else document.documentElement.removeAttribute(s.attr);
   });
@@ -2204,6 +2199,7 @@ function apprApply(){
    This log is read by anyone who opens the studio, so each note is written for
    them: two lines, plain language, what they get rather than what changed. */
 const UPDATES = [
+  { version: 'v1.5.0', date: '20 October 2026', title: 'Shared BA Design System', note: 'The studio now inherits its shared styles from BA Design System v0.1.0.' },
   {
     version: 'Next', soon: true,
     title: 'Turn any photo into a gradient',
