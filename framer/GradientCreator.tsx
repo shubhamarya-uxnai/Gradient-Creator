@@ -1,17 +1,8 @@
 /**
  * Gradient Creator for Framer.
  *
- * This component holds almost nothing. It loads the studio from GitHub, through
- * jsDelivr, pinned to one release: the page and all its behaviour, styles.css and
- * the gifski engine files. It adds your design system's stylesheets on top, and
- * runs it all in a frame on your page. To change the studio, publish a new release
- * on GitHub and put its tag in the Release field in Framer's right-hand panel.
- *
- * Styling: the studio uses shadcn / Tailwind names (--background, --card,
- * --primary, --border, --ring, --radius, --font-sans...), so a design system with
- * the same names restyles it directly. Its stylesheets load after the studio's
- * own, so their values win. Values must be full colours (oklch(), hsl(), #hex),
- * not shadcn v3's bare "222 47% 11%" numbers.
+ * This component loads the static React build from an immutable GitHub release.
+ * The app and BA design-system code ship together in the release.
  *
  * Licence: AGPL-3.0, like the studio it loads.
  * Source: https://github.com/shubhamarya-uxnai/Gradient-Creator
@@ -46,19 +37,7 @@ function loadStudio(base: string): Promise<string> {
 const esc = (v: string) =>
     v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 
-/**
- * One <link> per address, in the order given: https, or a design system being
- * previewed on this Mac (localhost). Anything else is ignored.
- */
-function stylesheetLinks(list: string): string {
-    return (list || "")
-        .split(/[\s,]+/)
-        .filter((u) => /^(?:https:\/\/|http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/)[^\s"'<>]*$/i.test(u))
-        .map((u) => '<link rel="stylesheet" href="' + esc(u) + '">')
-        .join("")
-}
-
-/** class and data- attributes for the page's root. Nothing else gets through. */
+/** Class and data- attributes for the page's root. Nothing else gets through. */
 function rootAttributes(dark: boolean, switches: string): string {
     const classes: string[] = dark ? ["dark"] : []
     const data: string[] = []
@@ -76,14 +55,13 @@ function rootAttributes(dark: boolean, switches: string): string {
 
 /**
  * The studio's page, ready for a frame: relative addresses point at the release,
- * the design system loads after the studio's own styles, and the mode switches
- * sit on the root, where the studio's colour roles are defined.
+ * assets resolve against the immutable release, and mode switches sit on the
+ * root, where the studio's colour roles are defined.
  */
-function framePage(html: string, base: string, designSystem: string, dark: boolean, switches: string): string {
+function framePage(html: string, base: string, dark: boolean, switches: string): string {
     const attrs = rootAttributes(dark, switches)
     return html
         .replace(/<head>/i, '<head><base href="' + esc(base) + '">')
-        .replace(/<\/head>/i, stylesheetLinks(designSystem) + "</head>")
         .replace(/<html([^>]*)>/i, (_all, rest) => "<html" + rest.replace(/\sdata-theme="[^"]*"/i, '') + (attrs ? " " + attrs : "") + ">")
 }
 
@@ -91,7 +69,6 @@ function framePage(html: string, base: string, designSystem: string, dark: boole
 
 interface Props {
     release: string
-    designSystem: string
     dark: boolean
     switches: string
     repository: string
@@ -99,7 +76,7 @@ interface Props {
 }
 
 export default function GradientCreator(props: Props) {
-    const { release, designSystem, dark, switches, repository, style } = props
+    const { release, dark, switches, repository, style } = props
     const base = "https://cdn.jsdelivr.net/gh/" + repository.trim() + "@" + release.trim() + "/"
     const [html, setHtml] = useState<string | null>(null)
     const [error, setError] = useState<string | null>(null)
@@ -118,8 +95,8 @@ export default function GradientCreator(props: Props) {
     }, [base])
 
     const page = useMemo(
-        () => (html ? framePage(html, base, designSystem, dark, switches) : null),
-        [html, base, designSystem, dark, switches]
+        () => (html ? framePage(html, base, dark, switches) : null),
+        [html, base, dark, switches]
     )
 
     const box: CSSProperties = {
@@ -159,17 +136,9 @@ addPropertyControls(GradientCreator, {
     release: {
         type: ControlType.String,
         title: "Release",
-        defaultValue: "v1.6.0",
+        defaultValue: "v1.7.0",
         placeholder: "v1.0.0",
         description: "A release tag on GitHub. Publish a new release there, then change this.",
-    },
-    designSystem: {
-        type: ControlType.String,
-        title: "Design system",
-        defaultValue: "https://cdn.jsdelivr.net/gh/shubhamarya-uxnai/BA-Design-Sytem@v0.2.0/dist/consumer.css",
-        placeholder: "https://cdn.jsdelivr.net/gh/shubhamarya-uxnai/BA-Design-Sytem@v0.2.0/dist/consumer.css",
-        displayTextArea: true,
-        description: "Stylesheet addresses, one per line. They load after the studio's own styles.",
     },
     dark: {
         type: ControlType.Boolean,

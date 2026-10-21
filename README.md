@@ -10,20 +10,19 @@ Works in any modern browser with nothing to install: **Export GIF (gifski in bro
 
 ## Use it in Framer
 
-The studio can live on a Framer page while everything still comes from this repo. `framer/GradientCreator.tsx` is a small code component: it loads the studio's page, `styles.css` and gifski from GitHub through jsDelivr, pinned to one release, adds your design system's stylesheets on top, and runs it in a frame on the page.
+The studio can live on a Framer page while everything still comes from this repo. `framer/GradientCreator.tsx` loads the compiled React app and its shared BA design-system components from one immutable GitHub release through jsDelivr.
 
 1. In Framer, add a new code file named `GradientCreator` and paste in `framer/GradientCreator.tsx`.
 2. Put the component on a page, for example `/gradient-creator`, and make it fill the page.
 3. Set it up in the right-hand panel:
-   - **Release:** a release tag of this repo, for example `v1.0.0`.
-   - **Design system:** your stylesheet addresses, one per line. They load after the studio's own styles, so their values win.
+   - **Release:** set this to `v1.7.0` to use the React rebuild, or a later published tag.
    - **Dark mode:** adds the `dark` class, shadcn's switch for dark values.
    - **Mode switches:** any other `class` or `data-` attributes your design system switches on, for example `data-contrast="high"`.
 4. Publish.
 
-**Type.** Sizes are not written into `styles.css` any more. Each one is a token in `type.css` pointing at `--ds-font-size-*` in the design system, which is the layer the Text size switch drives, so Appearance > Text size moves the whole interface from 1x to 2x. The design system's `body` / `label` / `heading` roles sit on the same scale but start at 11px, and a dense tool panel needs 10, 12 and 13 as well, so the raw steps are used directly. Weights use the system's 400 and 500; it has no 600, so the six places set in 600 stay literal until Figma has one.
+The React app imports BA components through `react-app/src/ui/components.tsx`. Product controls use semantic props; that file maps those props to the current BA implementation and is the one place to switch a local select to a future BA Dropdown.
 
-**Styling.** Every colour, radius and font in `styles.css` comes from shadcn / Tailwind names: `--background`, `--foreground`, `--card`, `--secondary`, `--accent`, `--border`, `--input`, `--ring`, `--primary`, `--primary-foreground`, `--popover`, `--muted-foreground`, `--destructive`, `--radius`, `--font-sans` and `--font-mono`, plus four extensions: `--subtle-foreground`, `--highlight`, `--success` and `--warning`. The remaining shades (the stage, hover borders, the primary button's gradient) are worked out from those, so a design system that sets them restyles the whole studio with no bridge. Values must be full colours, like `oklch()`, `hsl()` or hex.
+The build bundles BA's React component code, component styles, tokens and the app together. A Framer instance needs only its **Release** field changed; it does not load a second design-system stylesheet.
 
 **Updating.** Publish a new release on GitHub (a new tag), then put its tag in **Release**. A release never changes once published, so nothing reaches your page until you choose it.
 
@@ -68,18 +67,20 @@ From then on, the online studio shows **Export best GIF (gifski on your Mac)** w
 
 | File | What it holds |
 | --- | --- |
-| `index.html` | The studio: layout and all behaviour |
-| `styles.css` | The whole look. Colours, surfaces and lines are tokens at the top, in `:root` |
-| `type.css` | Type for the studio. Loads after the design system so it wins: the two families, and a size scale pointing at `--ds-font-size-*`, the layer the Text size switch lives on |
+| `index.html` | Compiled React entry page served by GitHub Pages and Framer |
+| `react-app/src/` | React application, feature controls and design-system adapter |
+| `react-app/src/engine/legacy-engine.js` | Generated gradient and export engine extracted from the preserved legacy source |
+| `legacy.html` | Previous single-file implementation, retained as the engine source and migration reference |
+| `styles.css` | Existing studio layout and theme tokens used by the React app |
+| `type.css` | Type scale and local font faces used by the React app |
 | `fonts/` | Instrument Sans, one variable file per subset, self-hosted so the studio still has its type with no network. SIL Open Font Licence, text in `fonts/OFL.txt` |
-| `design-system/` | The design system's tokens (`tokens.css`) and the file that maps them onto the names above (`shadcn.css`), copied from its build. They load after `styles.css`, so their values win. The studio stays dark unless the page it sits in picks a theme |
 | `start.py` | The one command: gifski setup, local server, browser |
 | `framer/GradientCreator.tsx` | The Framer code component that loads the studio from GitHub |
 | `vendor/` | gifski for the browser (gifski-wasm 2.2.0) |
 | `bin/` | gifski for the Mac, created on the first run and kept out of git |
 | `LICENSE` | AGPL-3.0 |
 
-To restyle, edit `styles.css` and reload the page, or load a design system that uses the same names (see [Use it in Framer](#use-it-in-framer)). The local server switches browser caching off, so every change shows on the next reload.
+To develop the React app, install dependencies in `react-app` and make the BA design-system checkout available at `../../../va-design-system` (or set `BA_DESIGN_SYSTEM_DIR`). Then run `npm run dev` from `react-app`. `npm run build` typechecks, regenerates the engine module from `legacy.html`, and writes the static release files to the repository root. The local server switches browser caching off, so changes show on reload.
 
 ## Settings
 
@@ -88,7 +89,7 @@ The gear at the top right opens a panel with two tabs.
 - **Appearance** holds the design system's switches: theme, contrast, colour temperature, text size and screen size. The choice is remembered and restored before the page paints, so it never flashes the old look.
 - **Updates** is the release log. The newest release carries a **Live** tag, worked out on its own from the list, and the row above it is what is being built next, tagged **Coming soon**.
 
-**Add a row on every push.** The log is the `UPDATES` array in `index.html`, newest first. Nothing else needs changing: whichever row is newest and not marked `soon` gets the Live tag.
+The Updates tab describes the current React release. Keep its displayed version in step with the Framer Release field when publishing a later release.
 
 ## Exporting
 

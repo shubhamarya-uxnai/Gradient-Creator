@@ -8,3 +8,5 @@ bin/
 
 __pycache__/
 .DS_Store
+react-app/node_modules
+react-app/dist/
