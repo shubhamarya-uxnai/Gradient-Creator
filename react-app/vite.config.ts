@@ -13,5 +13,10 @@ export default defineConfig({
     alias: { "@ba-design-system/react": resolve(baRoot, "packages/react/src") },
     dedupe: ["react", "react-dom"],
   },
+  server: {
+    fs: {
+      allow: ["..", baRoot, resolve(baRoot, "..")]
+    }
+  },
   build: { outDir: "..", emptyOutDir: false, assetsDir: "assets" },
 })

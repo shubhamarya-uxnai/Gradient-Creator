@@ -1,5 +1,20 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react"
-import { Button as DSButton, IconButton as DSIconButton, InputField as DSInputField, Selection as DSSelection, Chip as DSChip } from "@ba-design-system/react"
+import {
+  Button as DSButton,
+  IconButton as DSIconButton,
+  InputField as DSInputField,
+  Selection as DSSelection,
+  Chip as DSChip,
+  ProgressBar as DSProgressBar,
+  ProgressPie as DSProgressPie,
+  ProgressDonut as DSProgressDonut,
+  Loader as DSLoader,
+  Loaders as DSLoaders,
+  SegmentedChild as DSSegmentedChild,
+  StepperChild as DSStepperChild,
+  SegmentedProgress as DSSegmentedProgress,
+  Stepper as DSStepper,
+} from "@ba-design-system/react"
 
 /** The only product to design-system component mapping. */
 type ActionBase = Pick<ButtonHTMLAttributes<HTMLButtonElement>, "onClick" | "title" | "className" | "id" | "aria-label"> & {
@@ -19,6 +34,15 @@ export function IconAction({ variant = "ghost", size = "small", disabled, icon, 
 export const Field = DSInputField
 export const Choice = DSSelection
 export const StatusChip = DSChip
+export const ProgressBar = DSProgressBar
+export const ProgressPie = DSProgressPie
+export const ProgressDonut = DSProgressDonut
+export const Loader = DSLoader
+export const Loaders = DSLoaders
+export const SegmentedChild = DSSegmentedChild
+export const StepperChild = DSStepperChild
+export const SegmentedProgress = DSSegmentedProgress
+export const Stepper = DSStepper
 
 export type SelectOption = { value: string; label: string }
 export type SelectProps = { id?: string; label: string; value: string | number; options: SelectOption[]; onChange: (value: string) => void; disabled?: boolean }
