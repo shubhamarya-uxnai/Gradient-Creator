@@ -15,7 +15,7 @@ The studio can live on a Framer page while everything still comes from this repo
 1. In Framer, add a new code file named `GradientCreator` and paste in `framer/GradientCreator.tsx`.
 2. Put the component on a page, for example `/gradient-creator`, and make it fill the page.
 3. Set it up in the right-hand panel:
-   - **Release:** set this to `v1.7.0` to use the React rebuild, or a later published tag.
+   - **Release:** set this to `v1.8.0` to use the React rebuild, or a later published tag.
    - **Dark mode:** adds the `dark` class, shadcn's switch for dark values.
    - **Mode switches:** any other `class` or `data-` attributes your design system switches on, for example `data-contrast="high"`.
 4. Publish.

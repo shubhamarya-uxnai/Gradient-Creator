@@ -136,7 +136,7 @@ addPropertyControls(GradientCreator, {
     release: {
         type: ControlType.String,
         title: "Release",
-        defaultValue: "v1.7.0",
+        defaultValue: "v1.8.0",
         placeholder: "v1.0.0",
         description: "A release tag on GitHub. Publish a new release there, then change this.",
     },
